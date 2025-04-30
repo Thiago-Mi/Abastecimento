@@ -130,7 +130,7 @@ class GerenciadorBD:
         except sqlite3.Error as e: print(f"Erro buscar usuário: {e}"); return None
         finally: conn.close()
 
-    @st.cache_data
+    @st.cache_resource
     def listar_colaboradores(_self): # ...
         conn = _self._conectar(); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
         try:
