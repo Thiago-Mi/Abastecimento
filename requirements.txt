@@ -1,6 +1,5 @@
 pandas 
 plotly
-hashlib
 os
 datetime
 openpyxl
