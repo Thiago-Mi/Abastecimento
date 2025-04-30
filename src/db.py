@@ -22,7 +22,6 @@ class GerenciadorBD:
         # Descomente para popular na primeira execução se o DB estiver vazio
         self._popular_dados_exemplo() # << LINHA DESCOMENTADA AQUI
     
-    @st.cache_data
     def _conectar(self):
         """Retorna uma conexão com o banco de dados."""
         conn = sqlite3.connect(self.db_file)
