@@ -132,7 +132,7 @@ class GerenciadorBD:
 
     @st.cache_data
     def listar_colaboradores(_self): # ...
-        conn = self._conectar(); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
+        conn = _self._conectar(); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
         try:
             cursor.execute("SELECT username, nome_completo FROM usuarios WHERE role = 'Usuario' ORDER BY nome_completo")
             return cursor.fetchall()
@@ -151,7 +151,7 @@ class GerenciadorBD:
     @st.cache_data
     def listar_clientes(_self, colaborador_username=None, tipo_cliente=None, cliente_id=None): # Add cliente_id filter
         """Lista clientes, opcionalmente filtrados."""
-        conn = self._conectar()
+        conn = _self._conectar()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         try:
@@ -187,7 +187,7 @@ class GerenciadorBD:
     
     @st.cache_data
     def listar_tipos_cliente(_self, colaborador_username=None): # ... (sem mudanças)
-         conn = self._conectar(); cursor = conn.cursor()
+         conn = _self._conectar(); cursor = conn.cursor()
          try:
              query = "SELECT DISTINCT c.tipo FROM clientes c"; params = []
              if colaborador_username:
@@ -203,7 +203,7 @@ class GerenciadorBD:
     @st.cache_data
     def buscar_cliente_por_nome(_self, nome):
         """Busca um cliente pelo nome exato."""
-        conn = self._conectar()
+        conn = _self._conectar()
         conn.row_factory = sqlite3.Row # Para retornar como dicionário
         cursor = conn.cursor()
         try:
@@ -220,7 +220,7 @@ class GerenciadorBD:
         """Busca um cliente pelo ID."""
         if cliente_id is None:
             return None
-        conn = self._conectar()
+        conn = _self._conectar()
         conn.row_factory = sqlite3.Row # Para retornar como dicionário
         cursor = conn.cursor()
         try:
@@ -265,7 +265,7 @@ class GerenciadorBD:
     @st.cache_data
     def get_kpi_data_cliente(_self, cliente_id, periodo_dias=None):
         """Busca dados para os KPIs do painel do cliente (Enviados, Publicados, Pendentes)."""
-        conn = self._conectar(); cursor = conn.cursor()
+        conn = _self._conectar(); cursor = conn.cursor()
         kpi = {'enviados': 0, 'publicados': 0, 'pendentes': 0}
         if cliente_id is None: return kpi
 
@@ -289,7 +289,7 @@ class GerenciadorBD:
     @st.cache_data
     def get_kpi_data(_self, colaborador_username=None):
         """Busca dados para os KPIs (cards). Se colaborador_username for None, busca dados globais."""
-        conn = self._conectar()
+        conn = _self._conectar()
         cursor = conn.cursor()
         kpi = {'enviados': 0, 'validados': 0, 'pendentes': 0, 'invalidos': 0}
         try:
@@ -313,7 +313,7 @@ class GerenciadorBD:
         """Busca a contagem de documentos (Validados?) agrupados por período para o gráfico de linha."""
         df_result = pd.DataFrame({'periodo': [], 'contagem': [], 'periodo_dt': []}) # Inclui periodo_dt
         if cliente_id is None: return df_result
-        conn = self._conectar(); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
+        conn = _self._conectar(); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
         format_map = {'W': '%Y-%W', 'D': '%Y-%m-%d', 'M': '%Y-%m'}
         sql_format = format_map.get(grupo, '%Y-%W') # Padrão Semanal
         try:
@@ -344,7 +344,7 @@ class GerenciadorBD:
         """Busca a contagem total e atendida (validada) de documentos por critério."""
         crit_data = {}
         if cliente_id is None: return crit_data
-        conn = self._conectar(); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
+        conn = _self._conectar(); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
         tipos_criterio = ['Critérios Essenciais', 'Obrigatórios', 'Recomendados']
         for crit in tipos_criterio: crit_data[crit] = {'total': 0, 'atendidos': 0}
         try:
@@ -366,7 +366,7 @@ class GerenciadorBD:
     @st.cache_data
     def calcular_pontuacao_colaboradores(_self):
         """Calcula a pontuação, contagem e percentual de links validados dos colaboradores."""
-        conn = self._conectar()
+        conn = _self._conectar()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         df_pontuacao = pd.DataFrame({'Colaborador': [], 'Pontuação': [], 'Links Validados': [], 'Percentual': []}).set_index('Colaborador')
@@ -404,7 +404,7 @@ class GerenciadorBD:
     @st.cache_data
     def get_analise_cliente_data(_self, cliente_id, colaborador_username=None):
         """Busca dados para a seção 'Análise por Cliente' do dashboard Admin/Usuario."""
-        conn = self._conectar(); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
+        conn = _self._conectar(); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
         analise = {'docs_drive': 54, 'docs_publicados': 0, 'docs_pendentes': 36, 'criterios_counts': {}} # Placeholders
         if not cliente_id: return analise
         try:
