@@ -21,7 +21,8 @@ class GerenciadorBD:
         self._adicionar_admin_padrao_se_necessario()
         # Descomente para popular na primeira execução se o DB estiver vazio
         self._popular_dados_exemplo() # << LINHA DESCOMENTADA AQUI
-
+    
+    @st.cache_data
     def _conectar(self):
         """Retorna uma conexão com o banco de dados."""
         conn = sqlite3.connect(self.db_file)
@@ -130,7 +131,7 @@ class GerenciadorBD:
         except sqlite3.Error as e: print(f"Erro buscar usuário: {e}"); return None
         finally: conn.close()
 
-
+    @st.cache_data
     def listar_colaboradores(self): # ...
         conn = self._conectar(); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
         try:
@@ -147,7 +148,8 @@ class GerenciadorBD:
         except sqlite3.IntegrityError: return False, f"Erro: Cliente '{nome}' já existe."
         except sqlite3.Error as e: print(f"Erro add cliente: {e}"); return False, f"Erro: {e}"
         finally: conn.close()
-
+    
+    @st.cache_data
     def listar_clientes(self, colaborador_username=None, tipo_cliente=None, cliente_id=None): # Add cliente_id filter
         """Lista clientes, opcionalmente filtrados."""
         conn = self._conectar()
@@ -183,7 +185,8 @@ class GerenciadorBD:
             return []
         finally:
             conn.close()
-
+    
+    @st.cache_data
     def listar_tipos_cliente(self, colaborador_username=None): # ... (sem mudanças)
          conn = self._conectar(); cursor = conn.cursor()
          try:
@@ -198,7 +201,7 @@ class GerenciadorBD:
              return [row[0] for row in cursor.fetchall()]
          except sqlite3.Error as e: print(f"Erro listar tipos: {e}"); return []
          finally: conn.close()
-
+    @st.cache_data
     def buscar_cliente_por_nome(self, nome):
         """Busca um cliente pelo nome exato."""
         conn = self._conectar()
@@ -213,7 +216,7 @@ class GerenciadorBD:
         finally:
             conn.close()
 
-
+    @st.cache_data
     def buscar_cliente_por_id(self, cliente_id):
         """Busca um cliente pelo ID."""
         if cliente_id is None:
@@ -259,7 +262,8 @@ class GerenciadorBD:
             conn.commit(); return bool(cursor.rowcount), "Status atualizado." if cursor.rowcount else "Doc não encontrado."
         except sqlite3.Error as e: print(f"Erro att status: {e}"); return False, f"Erro: {e}"
         finally: conn.close()
-
+    
+    @st.cache_data
     def get_kpi_data_cliente(self, cliente_id, periodo_dias=None):
         """Busca dados para os KPIs do painel do cliente (Enviados, Publicados, Pendentes)."""
         conn = self._conectar(); cursor = conn.cursor()
@@ -282,7 +286,8 @@ class GerenciadorBD:
         except sqlite3.Error as e: print(f"Erro KPI Cliente: {e}")
         finally: conn.close()
         return kpi
-
+    
+    @st.cache_data
     def get_kpi_data(self, colaborador_username=None):
         """Busca dados para os KPIs (cards). Se colaborador_username for None, busca dados globais."""
         conn = self._conectar()
@@ -303,7 +308,8 @@ class GerenciadorBD:
         except sqlite3.Error as e: print(f"Erro ao buscar dados KPI: {e}")
         finally: conn.close()
         return kpi
-
+    
+    @st.cache_data
     def get_docs_por_periodo_cliente(self, cliente_id, grupo='W'): # W=Semana, D=Dia, M=Mês
         """Busca a contagem de documentos (Validados?) agrupados por período para o gráfico de linha."""
         df_result = pd.DataFrame({'periodo': [], 'contagem': [], 'periodo_dt': []}) # Inclui periodo_dt
@@ -333,7 +339,8 @@ class GerenciadorBD:
         except sqlite3.Error as e: print(f"Erro docs por período: {e}")
         finally: conn.close()
         return df_result
-
+    
+    @st.cache_data
     def get_criterios_atendidos_cliente(self, cliente_id):
         """Busca a contagem total e atendida (validada) de documentos por critério."""
         crit_data = {}
@@ -356,7 +363,8 @@ class GerenciadorBD:
         except sqlite3.Error as e: print(f"Erro critérios atendidos: {e}")
         finally: conn.close()
         return crit_data
-
+    
+    @st.cache_data
     def calcular_pontuacao_colaboradores(self):
         """Calcula a pontuação, contagem e percentual de links validados dos colaboradores."""
         conn = self._conectar()
@@ -393,7 +401,8 @@ class GerenciadorBD:
         except sqlite3.Error as e: print(f"Erro ao calcular pontuação: {e}")
         finally: conn.close()
         return df_pontuacao
-
+    
+    @st.cache_data
     def get_analise_cliente_data(self, cliente_id, colaborador_username=None):
         """Busca dados para a seção 'Análise por Cliente' do dashboard Admin/Usuario."""
         conn = self._conectar(); conn.row_factory = sqlite3.Row; cursor = conn.cursor()
