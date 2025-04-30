@@ -1,6 +1,5 @@
 pandas 
 plotly
-sqlite3
 hashlib
 os
 datetime
