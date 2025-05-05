@@ -4,7 +4,7 @@ import plotly.express as px
 
 # --- Google Sheets Configuration ---
 # Replace with the actual name of your MAIN Google Sheet file
-GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1UmTDfLCU3FUtBnQMSR8yhmfzLBHP8uNXrd2NSjeyS9Y/"
+GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1UmTDfLCU3FUtBnQMSR8yhmfzLBHP8uNXrd2NSjeyS9Y/" # Example URL
 ASSOC_COLS = ["colaborador_username", "cliente_nome"]
 # Names of the CENTRAL worksheets within the main Google Sheet
 SHEET_USERS = "usuarios"
@@ -24,17 +24,22 @@ ASSOC_COLS = ["colaborador_username", "cliente_nome"] # Example if using associa
 # Expected columns for the USER document sheets (adjust!)
 # These MUST match the columns in your `docs_username` sheets
 DOCS_COLS = [
-    "id", # Recommended: Add a unique ID (UUID?) per document entry
-    "colaborador_username", # For easy merging/filtering locally
+    "id",
+    "colaborador_username",
     "cliente_nome",
-    "data_registro", # Date of the entry itself
-    "dimensao_criterio", # e.g., "Essencial", "Obrigatório", "Recomendado"
+    "data_registro",
+    "dimensao_criterio",
     "link_ou_documento",
-    "quantidade", # Number of items this entry represents
-    "status", # e.g., 'Novo', 'Enviado' (optional tracking)
-    "data_envio_original", # Original upload/task date (Optional)
-    # Add any other relevant columns
+    "quantidade",
+    "status", # e.g., 'Novo', 'Enviado', 'Validado', 'Inválido'
+    "data_envio_original",
+    # --- NEW COLUMNS for Validation ---
+    "data_validacao",       # Timestamp when validation occurred
+    "validado_por",         # Username of the admin who validated
+    "observacoes_validacao" # Optional: Admin comments
 ]
+
+VALID_STATUSES = ['Novo', 'Enviado', 'Pendente', 'Validado', 'Inválido']
 
 
 # --- Configurações da Interface ---
@@ -50,6 +55,10 @@ APP_TITLE = "SAI - Sistema Híbrido de Acesso à Informação"
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin" # Change in production!
 DOCS_NO_DRIVE_TARGET = 54
+# Define valid statuses for easy reference and dropdowns
+VALID_STATUSES = ['Novo', 'Enviado', 'Pendente', 'Validado', 'Inválido'] # Add 'Inválido'
+
+
 # --- Dashboard Appearance ---
 DEFAULT_BAR_COLOR = px.colors.qualitative.Plotly[0]
 HIGHLIGHT_BAR_COLOR = "#636EFA"

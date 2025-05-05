@@ -28,44 +28,93 @@ st.markdown("#### 👑 Painel de Administração")
 st.divider()
 
 # --- Tabs for Navigation ---
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📊 Visão Geral",
+tab1, tab2, tab3, tab4, tab5 = st.tabs([ # Added Tab 5 implicitly by creating the page
+    "📊 Visão Documentos", # Renamed Tab 1
     "👤 Cadastrar Usuário",
     "🏢 Cadastrar Cliente",
-    "🔗 Atribuir Cliente-Colaborador"
+    "🔗 Atribuir Cliente-Colaborador",
+    "⚖️ Validar Documentos" # Explicitly referencing the new page
 ])
 
 # ==========================
-# Tab 1: Visão Geral
+# Tab 1: Visão Documentos (Enhanced)
 # ==========================
 with tab1:
-    st.subheader("Visão Geral dos Usuários e Sincronização")
-    users_data = manager.get_all_users_local_with_sync()
+    st.subheader("Visão Detalhada de Todos os Documentos (Cache Local)")
 
-    if users_data:
-        df_users = pd.DataFrame([dict(row) for row in users_data])
+    # --- Filters for Document View ---
+    col_f1, col_f2, col_f3 = st.columns(3)
+    with col_f1:
+        # Filter by User
+        colaboradores = manager.listar_colaboradores_local()
+        colab_options_map = {"Todos": None}
+        colab_options_map.update({c['nome_completo']: c['username'] for c in colaboradores})
+        selected_colab_name_ov = st.selectbox("Filtrar por Colaborador:", list(colab_options_map.keys()), key="ov_colab_filter")
+        user_filter_ov = colab_options_map[selected_colab_name_ov]
+    with col_f2:
+        # Filter by Client
+        clientes_list_ov = manager.listar_clientes_local(colaborador_username=user_filter_ov)
+        client_options_ov = ["Todos"] + sorted([c['nome'] for c in clientes_list_ov]) if clientes_list_ov else ["Todos"]
+        selected_client_name_ov = st.selectbox(
+            "Filtrar por Cliente:", client_options_ov, key="ov_client_filter",
+            disabled=(user_filter_ov is not None and not clientes_list_ov)
+        )
+        client_filter_ov = selected_client_name_ov if selected_client_name_ov != "Todos" else None
+    with col_f3:
+        # Filter by Status
+        status_options_ov = ["Todos"] + config.VALID_STATUSES
+        selected_status_ov = st.selectbox("Filtrar por Status:", status_options_ov, key="ov_status_filter")
+        status_filter_ov = selected_status_ov if selected_status_ov != "Todos" else None
 
-        def format_sync_time(ts_str):
-            if not ts_str or ts_str == 'None': return "Nunca"
-            try:
-                dt_obj = datetime.fromisoformat(ts_str.replace(' ', 'T'))
-                return dt_obj.strftime("%d/%m/%Y %H:%M:%S")
-            except (ValueError, TypeError):
-                 return str(ts_str) # Show raw value if parsing fails
+    # --- Fetch and Display Data ---
+    all_docs = manager.get_all_documents_local(
+        status_filter=status_filter_ov,
+        user_filter=user_filter_ov,
+        client_filter=client_filter_ov
+    )
 
-        df_users['Última Sincronização'] = df_users['last_sync_timestamp'].apply(format_sync_time)
-        cols_display = ['nome_completo', 'username', 'role', 'Última Sincronização']
-        st.dataframe(df_users[[col for col in cols_display if col in df_users.columns]], use_container_width=True)
-        st.info(f"Total de usuários no cache local: {len(df_users)}")
+    if all_docs:
+        df_all_docs = pd.DataFrame(all_docs)
+
+        # --- Format Dates and Select Columns ---
+        def format_display_date(date_str, fmt="%d/%m/%Y"):
+             if not date_str or pd.isna(date_str): return ""
+             try: return pd.to_datetime(date_str).strftime(fmt)
+             except: return str(date_str) # Fallback
+
+        def format_display_datetime(dt_str, fmt="%d/%m/%Y %H:%M"):
+             if not dt_str or pd.isna(dt_str): return ""
+             try: return pd.to_datetime(dt_str).strftime(fmt)
+             except: return str(dt_str) # Fallback
+
+        df_display_ov = df_all_docs.copy()
+        if 'data_registro' in df_display_ov.columns:
+            df_display_ov['data_registro'] = df_display_ov['data_registro'].apply(format_display_date)
+        if 'data_validacao' in df_display_ov.columns:
+            df_display_ov['data_validacao'] = df_display_ov['data_validacao'].apply(format_display_datetime)
+
+        # Define desired columns for the overview table
+        overview_cols = [
+            'colaborador_username', 'cliente_nome', 'data_registro', 'status',
+            'dimensao_criterio', 'link_ou_documento', 'quantidade',
+            'data_validacao', 'validado_por', 'observacoes_validacao', 'id'
+        ]
+        overview_cols = [col for col in overview_cols if col in df_display_ov.columns] # Ensure cols exist
+
+        st.dataframe(df_display_ov[overview_cols], use_container_width=True, hide_index=True)
+        st.info(f"Total de documentos no cache local (com filtros aplicados): {len(df_display_ov)}")
     else:
-        st.warning("Nenhum dado de usuário encontrado no cache local.")
+        st.warning("Nenhum documento encontrado no cache local com os filtros selecionados.")
 
     st.divider()
     st.subheader("Ações Gerais")
-
-    if st.button("🔄 Recarregar Todos os Dados das Planilhas", key="reload_all_data"):
+    if st.button("🔄 Recarregar Todos os Dados das Planilhas", key="reload_all_data_tab1"):
          with st.spinner("Recarregando todos os dados..."):
             try:
+                # Clear local cache before reloading? Might be good.
+                # manager._execute_local_sql("DELETE FROM documentos")
+                # manager._execute_local_sql("DELETE FROM usuarios")
+                # etc. Or just rely on load_data_for_session's replace logic.
                 manager.load_data_for_session(admin_username, admin_role)
                 st.success("Dados recarregados com sucesso!")
                 st.rerun()
@@ -73,90 +122,71 @@ with tab1:
                 st.error("Falha ao recarregar os dados.")
                 st.exception(e)
 
+    # --- Keep KPIs and Pontuação Calculation ---
     st.divider()
     st.subheader("KPIs Gerais (Todos Usuários - Cache Local)")
-    kpi_geral = manager.get_kpi_data_local()
+    kpi_geral = manager.get_kpi_data_local() # Uses local cache
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Registrado", f"{kpi_geral.get('enviados', 0):02d}")
-    col2.metric("Total Validado", f"{kpi_geral.get('validados', 0):02d}")
-    col3.metric("Total Pendente", f"{kpi_geral.get('pendentes', 0):02d}")
-    col4.metric("Total Inválido", f"{kpi_geral.get('invalidos', 0):02d}")
-    
-
+    # Adjust KPI names if needed based on how you map statuses
+    col1.metric("Docs Enviados/Novos", f"{kpi_geral.get('docs_enviados', 0) + kpi_geral.get('docs_pendentes', 0):02d}") # Example: Combine Enviado+Pendente
+    col2.metric("Docs Validados", f"{kpi_geral.get('docs_publicados', 0):02d}")
+    col3.metric("Docs Inválidos", f"{kpi_geral.get('docs_invalidos', 0):02d}")
+    # col4.metric("Algum outro KPI?", ...)
     st.divider()
+
     st.subheader("Pontuação Atualizada (Direto das Planilhas)")
-    if st.button("📊 Calcular Pontuação Atualizada (Lento)"):
+    if st.button("📊 Calcular Pontuação Atualizada (Pode ser Lento)"):
         with st.spinner("Buscando dados e calculando pontuação das planilhas..."):
-            # Limpar cache específico desta função antes de chamar? Opcional.
-            # hybrid_db.HybridDBManager.calcular_pontuacao_colaboradores_gsheet.clear()
-            df_pontuacao_gsheet = manager.calcular_pontuacao_colaboradores_gsheet()
+            manager.calcular_pontuacao_colaboradores_gsheet.clear() # Clear cache for this specific function
+            df_pontuacao_gsheet = manager.calcular_pontuacao_colaboradores_gsheet() # Calls GSheet directly
         if not df_pontuacao_gsheet.empty:
             st.dataframe(df_pontuacao_gsheet)
         else:
             st.warning("Não foi possível calcular a pontuação diretamente das planilhas ou não há dados.")
-     
+
+
 # ==========================
 # Tab 2: Cadastrar Usuário
 # ==========================
 with tab2:
+    # ... (Keep existing user registration logic) ...
     st.subheader("Cadastrar Novo Usuário no Sistema")
-
     with st.form("new_user_form", clear_on_submit=True):
-        st.markdown("**Informações do Usuário**")
+        # ... form fields ...
         new_username = st.text_input("Nome de Usuário (Login)", key="nu_uname").strip()
         new_fullname = st.text_input("Nome Completo", key="nu_fname").strip()
         new_password = st.text_input("Senha Temporária", type="password", key="nu_pass")
-        new_role = st.selectbox("Perfil (Role)", ["Usuario", "Admin", "Cliente"], key="nu_role") # List options
-
+        new_role = st.selectbox("Perfil (Role)", ["Usuario", "Admin", "Cliente"], key="nu_role")
         submitted = st.form_submit_button("✨ Cadastrar Usuário")
-
         if submitted:
-            # --- Basic Validations ---
+             # ... validation and registration logic ...
             if not all([new_username, new_fullname, new_password, new_role]):
                 st.error("❌ Por favor, preencha todos os campos.")
             else:
-                 with st.spinner(f"Verificando e cadastrando '{new_username}'..."):
-                    # --- Check for Duplicate Username (Directly in Google Sheets) ---
-                    is_duplicate = False
+                with st.spinner(f"Verificando e cadastrando '{new_username}'..."):
+                    # ... (duplicate check logic) ...
+                    is_duplicate = False # Placeholder
                     try:
-                        users_ws = manager._get_worksheet(config.SHEET_USERS)
-                        if users_ws:
-                             # Using find is simple but might be slow on huge sheets
-                             cell = users_ws.find(new_username, in_column=1) # Assumes username is col 1
-                             if cell:
-                                  is_duplicate = True
-                                  st.error(f"❌ Erro: Nome de usuário '{new_username}' já existe!")
-                        else:
-                             st.error("❌ Erro: Não foi possível acessar a planilha de usuários para verificação.")
-                             # Stop execution if worksheet is inaccessible
-                             st.stop()
-                    except gspread.exceptions.APIError as api_err:
-                         st.error(f"❌ Erro de API ao verificar usuário: {api_err}")
-                         # Stop execution on API error
-                         st.stop()
+                         users_ws_check = manager._get_worksheet(config.SHEET_USERS)
+                         if users_ws_check:
+                              cell = users_ws_check.find(new_username, in_column=config.USERS_COLS.index('username') + 1)
+                              if cell: is_duplicate = True
+                         else: raise Exception("Planilha de usuários não encontrada.")
                     except Exception as find_err:
-                         st.error(f"❌ Erro inesperado ao verificar duplicidade: {find_err}")
-                         # Stop execution on unexpected error
+                         st.error(f"Erro ao verificar duplicidade: {find_err}")
                          st.stop()
 
-
-                    # --- Proceed if not duplicate ---
-                    if not is_duplicate:
+                    if is_duplicate:
+                         st.error(f"❌ Erro: Nome de usuário '{new_username}' já existe!")
+                    else:
+                         # ... (hashing, appending user to sheet logic) ...
                          hashed_pw = manager._hash_password(new_password)
-                         # Match order of columns in config.USERS_COLS
-                         user_data_list = [
-                              new_username,
-                              hashed_pw,
-                              new_fullname,
-                              new_role,
-                              None # last_sync_timestamp starts as None
-                         ]
-                         # Slice to ensure correct number of columns just in case
+                         user_data_list = [new_username, hashed_pw, new_fullname, new_role, None]
                          user_data_to_append = user_data_list[:len(config.USERS_COLS)]
-
-                         # --- Append User to Google Sheet ---
                          user_added_success = False
                          try:
+                              users_ws = manager._get_worksheet(config.SHEET_USERS) # Get it again just in case
+                              if not users_ws: raise Exception("Planilha de usuários não encontrada para adicionar.")
                               users_ws.append_row(user_data_to_append, value_input_option='USER_ENTERED')
                               st.success(f"✅ Usuário '{new_username}' ({new_role}) adicionado à planilha principal.")
                               user_added_success = True
@@ -169,162 +199,308 @@ with tab2:
                               docs_sheet_name = manager._get_user_sheet_name(new_username)
                               st.write(f"Tentando criar planilha de documentos '{docs_sheet_name}'...")
                               try:
-                                   # Check if it exists first (optional, but good practice)
-                                   try:
-                                        existing_ws = manager.spreadsheet.worksheet(docs_sheet_name)
-                                        st.warning(f"⚠️ Planilha '{docs_sheet_name}' já existe. Não será recriada.")
-                                        sheet_created_or_not_needed = True
-                                   except gspread.exceptions.WorksheetNotFound:
-                                        # Expected case: Sheet doesn't exist, try to create
-                                        new_ws = manager.spreadsheet.add_worksheet(
-                                             title=docs_sheet_name,
-                                             rows=10, # Start small
-                                             cols=len(config.DOCS_COLS)
-                                        )
-                                        # Add header row immediately
-                                        new_ws.update([config.DOCS_COLS], value_input_option='USER_ENTERED')
-                                        st.success(f"✅ Planilha '{docs_sheet_name}' criada com sucesso.")
-                                        sheet_created_or_not_needed = True
+                                   existing_ws = manager.spreadsheet.worksheet(docs_sheet_name)
+                                   st.warning(f"⚠️ Planilha '{docs_sheet_name}' já existe. Não será recriada.")
+                                   sheet_created_or_not_needed = True
+                              except gspread.exceptions.WorksheetNotFound:
+                                   # Expected case: Sheet doesn't exist, try to create
+                                   new_ws = manager.spreadsheet.add_worksheet(
+                                        title=docs_sheet_name,
+                                        rows=20, # Start with reasonable rows
+                                        cols=len(config.DOCS_COLS) # <<< CORRECT: Uses length of updated list
+                                   )
+                                   # Add header row immediately using the updated list
+                                   new_ws.update([config.DOCS_COLS], value_input_option='USER_ENTERED') # <<< CORRECT: Writes updated header
+                                   st.success(f"✅ Planilha '{docs_sheet_name}' criada com cabeçalho completo.")
+                                   sheet_created_or_not_needed = True
 
-                              except gspread.exceptions.APIError as drive_api_err:
-                                   error_message = f"❌ Falha ao criar planilha '{docs_sheet_name}'. Erro de API: {drive_api_err}"
-                                   if 'drive.file' not in config.SCOPES: # Checking our config, not actual permissions
-                                        error_message += "\n\nA scope 'drive.file' pode estar faltando em `sheets_auth.py`."
-                                   elif 'insufficient permission' in str(drive_api_err).lower():
-                                       error_message += "\n\nVerifique as permissões da Conta de Serviço no Google Cloud. Precisa de permissão para editar arquivos no Google Drive."
-                                   st.error(error_message)
-                                   st.warning("O usuário foi criado, mas você precisará criar e configurar a planilha de documentos manualmente.")
-                              except Exception as create_sheet_err:
-                                   st.error(f"❌ Erro inesperado ao criar planilha '{docs_sheet_name}': {create_sheet_err}")
-                                   st.warning("O usuário foi criado, mas você precisará criar e configurar a planilha de documentos manualmente.")
-                         elif new_role != 'Usuario':
-                                sheet_created_or_not_needed = True # No sheet needed for Admin/Cliente
-
-                         # --- Reload Local Data after Successful Changes ---
-                         if user_added_success: # Reload only if the primary user addition was successful
+                         # ... (reloading local data logic) ...
+                         if user_added_success:
                               st.info("Atualizando cache de dados local...")
                               try:
-                                   # Use the existing load function to refresh local state
                                    manager.load_data_for_session(admin_username, admin_role)
                                    st.success("Cache local atualizado.")
-                                   st.info("O novo usuário agora está visível na 'Visão Geral'.")
-                                   # No st.rerun() needed here as form clears and feedback is shown.
-                                   # User can switch tabs to see the update.
                               except Exception as reload_err:
-                                   st.error("Usuário adicionado às planilhas, mas falha ao recarregar o cache local. Recarregue a página ou use o botão 'Recarregar Todos os Dados'.")
-                                   st.exception(reload_err)
+                                   st.error("Usuário adicionado, mas falha ao recarregar cache local.")
 
 
 # ==========================
 # Tab 3: Cadastrar Cliente
 # ==========================
 with tab3:
+    # ... (Keep existing client registration logic) ...
     st.subheader("Cadastrar Novo Cliente no Sistema")
-
     with st.form("new_client_form", clear_on_submit=True):
-        st.markdown("**Informações do Cliente**")
+        # ... form fields ...
         new_client_name = st.text_input("Nome do Cliente", key="nc_name").strip()
-        # Pode adicionar tipos padrão ou buscar tipos existentes
         tipos_existentes = list(set([c['tipo'] for c in manager.listar_clientes_local() if c['tipo']]))
         tipos_opcao = sorted(list(set(["Prefeitura", "Câmara", "Autarquia", "Outro"] + tipos_existentes)))
         new_client_type = st.selectbox("Tipo de Cliente", tipos_opcao, key="nc_type")
-
         submit_new_client = st.form_submit_button("🏢 Cadastrar Cliente")
-
         if submit_new_client:
-            if not new_client_name or not new_client_type:
+             # ... validation ...
+             if not new_client_name or not new_client_type:
                  st.error("❌ Por favor, preencha todos os campos.")
-            else:
-                 with st.spinner(f"Cadastrando cliente '{new_client_name}'..."):
-                    # Use the new method in manager to add to both local and gsheet
+             else:
+                with st.spinner(f"Cadastrando cliente '{new_client_name}'..."):
                     success = manager.add_cliente_local_and_gsheet(new_client_name, new_client_type)
                     if success:
-                        # Reload local data to reflect the new client
-                        st.info("Atualizando cache local...")
+                        # ... reload local data ...
                         try:
                              manager.load_data_for_session(admin_username, admin_role)
                              st.success("Cache local atualizado.")
-                             st.info("O novo cliente agora está disponível.")
                         except Exception as reload_err:
                              st.error("Cliente adicionado, mas falha ao recarregar cache local.")
-                             st.exception(reload_err)
-                    # Error messages are handled within add_cliente_local_and_gsheet
+
 
 # ==========================
 # Tab 4: Atribuir Cliente-Colaborador
 # ==========================
 with tab4:
+    # ... (Keep existing assignment logic) ...
     st.subheader("Atribuir Clientes a Colaboradores")
-
-    # --- Selecionar Colaborador ---
-    colaboradores = manager.listar_colaboradores_local()
-    if not colaboradores:
-         st.warning("Nenhum colaborador ('Usuario') cadastrado para atribuir clientes.")
+    # ... collaborator selection ...
+    colaboradores_assign = manager.listar_colaboradores_local()
+    if not colaboradores_assign:
+         st.warning("Nenhum colaborador ('Usuario') cadastrado.")
     else:
-        colab_map = {c['nome_completo']: c['username'] for c in colaboradores}
-        colab_names = ["Selecione..."] + sorted(list(colab_map.keys()))
-        selected_colab_name = st.selectbox("Selecione o Colaborador:", colab_names, key="assign_colab_select")
+        colab_map_assign = {c['nome_completo']: c['username'] for c in colaboradores_assign}
+        colab_names_assign = ["Selecione..."] + sorted(list(colab_map_assign.keys()))
+        selected_colab_name_assign = st.selectbox("Selecione o Colaborador:", colab_names_assign, key="assign_colab_select")
 
-        if selected_colab_name != "Selecione...":
-            selected_colab_username = colab_map[selected_colab_name]
-            st.write(f"Editando atribuições para: **{selected_colab_name}** (`{selected_colab_username}`)")
+        if selected_colab_name_assign != "Selecione...":
+            selected_colab_username_assign = colab_map_assign[selected_colab_name_assign]
+            st.write(f"Editando atribuições para: **{selected_colab_name_assign}**")
 
-            # --- Listar Clientes Atribuídos e Disponíveis ---
-            all_clients_local = manager.listar_clientes_local()
-            all_client_names = sorted([c['nome'] for c in all_clients_local]) if all_clients_local else []
+            # ... listing assigned and available clients ...
+            all_clients_local_assign = manager.listar_clientes_local()
+            all_client_names_assign = sorted([c['nome'] for c in all_clients_local_assign]) if all_clients_local_assign else []
+            assigned_clients_assign = manager.get_assigned_clients_local(selected_colab_username_assign)
+            available_clients_assign = sorted(list(set(all_client_names_assign) - set(assigned_clients_assign)))
 
-            assigned_clients = manager.get_assigned_clients_local(selected_colab_username)
-            available_clients = sorted(list(set(all_client_names) - set(assigned_clients)))
+            # ... multiselect for removing ...
+            st.multiselect("Remover Atribuições:", assigned_clients_assign, key="unassign_clients_multi")
+            if st.button("🗑️ Remover Selecionadas"):
+                 # ... unassign logic ...
+                 clients_to_remove = st.session_state.unassign_clients_multi
+                 if clients_to_remove:
+                    with st.spinner("Removendo..."):
+                        unassign_success = manager.unassign_clients_from_collab(selected_colab_username_assign, clients_to_remove)
+                        if unassign_success:
+                            try:
+                                manager.load_data_for_session(admin_username, admin_role)
+                                st.success("Removido e cache atualizado.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error("Removido, mas falha ao recarregar cache.")
+                 else: st.warning("Nenhum cliente selecionado.")
 
-            st.markdown("**Clientes Atualmente Atribuídos:**")
-            if assigned_clients:
-                st.multiselect("Clientes Atribuídos (selecione para remover):",
-                               options=assigned_clients,
-                               default=[], # Start with none selected for removal
-                               key="unassign_clients_multi")
-                if st.button("🗑️ Remover Atribuições Selecionadas"):
-                    clients_to_remove = st.session_state.unassign_clients_multi
-                    if not clients_to_remove:
-                         st.warning("Nenhum cliente selecionado para remoção.")
-                    else:
-                         with st.spinner(f"Removendo atribuições de {selected_colab_name}..."):
-                            unassign_success = manager.unassign_clients_from_collab(selected_colab_username, clients_to_remove)
-                            if unassign_success:
-                                 # Refresh local data to show changes
-                                 try:
-                                     manager.load_data_for_session(admin_username, admin_role)
-                                     st.success("Atribuições removidas e cache atualizado.")
-                                     st.rerun() # Rerun to update multiselects
-                                 except Exception as e:
-                                     st.error("Atribuições removidas, mas falha ao recarregar cache local.")
-                            # Error displayed by manager method
 
-            else:
-                st.caption("Nenhum cliente atribuído a este colaborador.")
+            # ... multiselect for adding ...
+            st.multiselect("Adicionar Atribuições:", available_clients_assign, key="assign_clients_multi")
+            if st.button("➕ Adicionar Selecionadas"):
+                # ... assign logic ...
+                clients_to_add = st.session_state.assign_clients_multi
+                if clients_to_add:
+                    with st.spinner("Adicionando..."):
+                         assign_success = manager.assign_clients_to_collab(selected_colab_username_assign, clients_to_add)
+                         if assign_success:
+                              try:
+                                   manager.load_data_for_session(admin_username, admin_role)
+                                   st.success("Adicionado e cache atualizado.")
+                                   st.rerun()
+                              except Exception as e:
+                                   st.error("Adicionado, mas falha ao recarregar cache.")
+                else: st.warning("Nenhum cliente selecionado.")
 
-            st.markdown("**Clientes Disponíveis para Atribuição:**")
-            if available_clients:
-                st.multiselect("Clientes Disponíveis (selecione para adicionar):",
-                               options=available_clients,
-                               default=[],
-                               key="assign_clients_multi")
-                if st.button("➕ Adicionar Atribuições Selecionadas"):
-                     clients_to_add = st.session_state.assign_clients_multi
-                     if not clients_to_add:
-                          st.warning("Nenhum cliente selecionado para adição.")
-                     else:
-                           with st.spinner(f"Adicionando atribuições para {selected_colab_name}..."):
-                                assign_success = manager.assign_clients_to_collab(selected_colab_username, clients_to_add)
-                                if assign_success:
-                                      try:
-                                          manager.load_data_for_session(admin_username, admin_role)
-                                          st.success("Atribuições adicionadas e cache atualizado.")
-                                          st.rerun() # Rerun to update multiselects
-                                      except Exception as e:
-                                          st.error("Atribuições adicionadas, mas falha ao recarregar cache local.")
-                                # Error displayed by manager method
+with tab5: 
+     # --- Check Login and Role ---
+    if not st.session_state.get('data_loaded') or not st.session_state.get('db_manager'):
+        st.warning("Os dados ainda estão sendo carregados ou o gerenciador não foi inicializado.")
+        st.stop()
 
-            else:
-                 st.caption("Nenhum cliente disponível para novas atribuições.")
+    manager = st.session_state.db_manager
+    admin_username = st.session_state.get('username')
 
-# Clearer separation for the form content ends here
+    # --- Page Title ---
+    st.subheader("Validação de Documentos")
+    st.divider()
+
+    # --- Filters ---
+    st.sidebar.header("Filtros de Validação")
+
+    # Filter by User
+    colaboradores = manager.listar_colaboradores_local()
+    colab_options_map = {"Todos": None}
+    colab_options_map.update({c['nome_completo']: c['username'] for c in colaboradores})
+    selected_colab_name = st.sidebar.selectbox("Filtrar por Colaborador:", list(colab_options_map.keys()), key="val_colab_filter")
+    selected_colab_filter_user = colab_options_map[selected_colab_name]
+
+    # Filter by Client
+    # Get clients relevant to the selected collaborator (or all if 'Todos' selected)
+    clientes_list = manager.listar_clientes_local(colaborador_username=selected_colab_filter_user)
+    client_options_names_only = ["Todos"] + sorted([c['nome'] for c in clientes_list]) if clientes_list else ["Todos"]
+    selected_client_name_filter = st.sidebar.selectbox(
+        "Filtrar por Cliente:",
+        client_options_names_only,
+        key="val_client_filter",
+        disabled=(selected_colab_filter_user is not None and not clientes_list) # Disable if specific user has no clients
+    )
+    client_filter_val = selected_client_name_filter if selected_client_name_filter != "Todos" else None
+
+
+    # Filter by Status
+    status_options = ["Todos"] + config.VALID_STATUSES
+    # Default to showing statuses that typically need validation
+    default_statuses_to_show = ['Novo', 'Enviado', 'Pendente']
+    selected_status_filter = st.sidebar.multiselect(
+        "Filtrar por Status:",
+        options=status_options,
+        default=default_statuses_to_show,
+        key="val_status_filter"
+    )
+    status_filter_val = selected_status_filter if "Todos" not in selected_status_filter else None
+
+
+    # --- Fetch Data based on Filters ---
+    docs_to_validate = manager.get_all_documents_local(
+        status_filter=None, # Apply multi-select filter after fetching based on user/client
+        user_filter=selected_colab_filter_user,
+        client_filter=client_filter_val
+    )
+
+    df_docs = pd.DataFrame(docs_to_validate)
+
+    # Apply multi-status filter locally if needed
+    if status_filter_val:
+          if not df_docs.empty and 'status' in df_docs.columns:
+               df_docs = df_docs[df_docs['status'].isin(status_filter_val)]
+          elif 'status' not in df_docs.columns and not df_docs.empty:
+               # Warn if the column is missing but there is data
+               st.warning("A coluna 'status' não foi encontrada nos dados carregados. O filtro de status não pode ser aplicado.")
+          # If df_docs is empty, do nothing, the check below will handle it.
+
+
+
+    # --- Display Data for Validation using Data Editor ---
+    if not df_docs.empty:
+        st.info(f"Exibindo {len(df_docs)} documentos para validação.")
+
+        # Prepare DataFrame for editor
+        df_display = df_docs.copy()
+
+        # Add columns needed for interaction in the editor
+        df_display['Marcar para Validar'] = False
+        df_display['Novo Status'] = df_display['status'] # Initialize with current status
+        df_display['Observações'] = df_display['observacoes_validacao'].fillna('') # Use existing or empty
+
+        # Define columns to show and their order/configuration
+        cols_to_show_editor = [
+            'Marcar para Validar',
+            'Novo Status',
+            'Observações',
+            'link_ou_documento',
+            'status', # Show current status for reference
+            'colaborador_username',
+            'cliente_nome',
+            'data_registro',
+            'dimensao_criterio',
+            'id', # Keep ID for reference, but disable editing
+            'data_validacao',
+            'validado_por'
+        ]
+        # Filter out columns that might not exist in the dataframe yet
+        cols_to_show_editor = [col for col in cols_to_show_editor if col in df_display.columns]
+
+        # Configure editor columns
+        column_config = {
+            "Marcar para Validar": st.column_config.CheckboxColumn(required=True),
+            "Novo Status": st.column_config.SelectboxColumn(
+                "Novo Status",
+                help="Selecione o novo status para aplicar.",
+                options=config.VALID_STATUSES,
+                required=True
+            ),
+            "Observações": st.column_config.TextColumn(
+                "Observações",
+                help="Adicione comentários sobre a validação (opcional).",
+                width="medium"
+            ),
+            "link_ou_documento": st.column_config.LinkColumn( # Make link clickable
+                "Link/Documento",
+                help="Clique para abrir o link (se aplicável).",
+                width="large",
+                display_text="Abrir/Ver" # Customize text? Or show URL? Show URL is better.
+            ),
+            "status": st.column_config.TextColumn("Status Atual", disabled=True),
+            "colaborador_username": st.column_config.TextColumn("Colaborador", disabled=True),
+            "cliente_nome": st.column_config.TextColumn("Cliente", disabled=True),
+            "data_registro": st.column_config.DateColumn("Data Reg.", format="DD/MM/YYYY", disabled=True),
+            "dimensao_criterio": st.column_config.TextColumn("Critério", disabled=True),
+            "id": st.column_config.TextColumn("ID", disabled=True, width="small"),
+            "data_validacao": st.column_config.DatetimeColumn("Data Validação", format="DD/MM/YYYY HH:mm", disabled=True),
+            "validado_por": st.column_config.TextColumn("Validado Por", disabled=True),
+        }
+
+        # Ensure config only includes columns present in the dataframe
+        final_column_config = {k: v for k, v in column_config.items() if k in cols_to_show_editor}
+
+
+        st.markdown("Marque os documentos, selecione o **Novo Status**, adicione observações (opcional) e clique em 'Processar Validações'.")
+
+        # Use a unique key for the editor to help with state management
+        if 'validation_editor_key' not in st.session_state:
+            st.session_state.validation_editor_key = 0
+
+        edited_df = st.data_editor(
+            df_display[cols_to_show_editor], # Show only selected columns
+            column_config=final_column_config,
+            key=f"validation_editor_{st.session_state.validation_editor_key}",
+            hide_index=True,
+            use_container_width=True,
+            num_rows="dynamic" # Adjust height automatically
+        )
+
+        # --- Process Validation Button ---
+        st.divider()
+        marked_rows = edited_df[edited_df['Marcar para Validar'] == True]
+        num_marked = len(marked_rows)
+
+        if st.button(f"🚀 Processar {num_marked} Validações Marcadas", disabled=(num_marked == 0)):
+            if num_marked > 0:
+                success_count = 0
+                fail_count = 0
+                with st.spinner("Processando validações e atualizando planilhas..."):
+                    for index, row in marked_rows.iterrows():
+                        doc_id = row['id']
+                        new_status = row['Novo Status']
+                        observacoes = row['Observações']
+
+                        # Call the manager method to update GSheet and Local DB
+                        update_success = manager.update_document_status_gsheet_and_local(
+                            doc_id=doc_id,
+                            new_status=new_status,
+                            admin_username=admin_username, # Logged-in admin
+                            observacoes=observacoes
+                        )
+                        if update_success:
+                            success_count += 1
+                        else:
+                            fail_count += 1
+                            st.warning(f"Falha ao processar ID: {doc_id}") # Show immediate feedback on failure
+
+                st.toast(f"Processamento concluído!")
+                if success_count > 0:
+                    st.success(f"{success_count} documentos validados/atualizados com sucesso!")
+                if fail_count > 0:
+                    st.error(f"{fail_count} validações falharam. Verifique os avisos acima e a planilha.")
+
+                # Increment key to force re-render of the data editor with fresh data
+                st.session_state.validation_editor_key += 1
+                st.rerun() # Rerun to reflect changes immediately
+
+    else:
+        st.info("Nenhum documento encontrado com os filtros selecionados.")
+
+# Tab 5 is implicitly handled by the existence of pages/4_Validação_Documentos.py
+# Streamlit automatically adds it to the navigation based on filename.

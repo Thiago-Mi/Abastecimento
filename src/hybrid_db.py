@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import gspread
+from google.oauth2.service_account import Credentials # Explicit import
 from datetime import datetime
 import hashlib
 import uuid # For generating unique IDs for documents
@@ -10,7 +11,7 @@ import uuid # For generating unique IDs for documents
 import config
 import sheets_auth # Our authentication module
 
-class HybridDBManager:  
+class HybridDBManager:
     """
     Manages data synchronization between Google Sheets (master) and a local
     in-memory SQLite database (session cache).
@@ -19,7 +20,7 @@ class HybridDBManager:
         """Initializes the manager, gets gspread client, connects to local DB."""
         self.gc = sheets_auth.get_gspread_client()
         try:
-            print("abrindo")
+            print("Opening main spreadsheet...")
             self.spreadsheet = self.gc.open_by_url(config.GOOGLE_SHEET_URL)
         except Exception as e:
             st.error(f"Failed to open Google Sheet '{config.GOOGLE_SHEET_URL}': {e}")
@@ -45,29 +46,21 @@ class HybridDBManager:
                     return cursor.fetchone()
                 elif fetch_mode == "all":
                     return cursor.fetchall()
-                else: # No fetch needed for INSERT/UPDATE/DELETE etc.
-                     self.local_conn.commit()
-                     return cursor.rowcount
+                else: # No fetch needed
+                     return None # Or raise error? Indicate no fetch expected
             else: # For INSERT, UPDATE, DELETE
                 self.local_conn.commit()
                 return cursor.rowcount
         except sqlite3.Error as e:
             st.error(f"Local SQLite Error: {e}\nQuery: {query[:100]}...")
             print(f"Local SQLite Error: {e}\nQuery: {query}\nParams: {params}")
-            # In production, you might want more robust error handling
-            # Depending on the error, you might want to return None, [], or raise it
             return None # Or raise e
-        finally:
-             # Cursors are usually lightweight, but closing is good practice
-             # Be careful if multiple operations need the same cursor
-             pass # Keep connection open for the session
 
 
     def _create_local_tables(self):
         """Creates the necessary tables in the local in-memory SQLite DB."""
         print("Creating local SQLite tables...")
         # --- Usuarios Table ---
-        # Matching columns from config.USERS_COLS potentially + local needs
         self._execute_local_sql("""
             CREATE TABLE IF NOT EXISTS usuarios (
                 username TEXT PRIMARY KEY UNIQUE NOT NULL,
@@ -81,38 +74,36 @@ class HybridDBManager:
         # --- Clientes Table ---
         self._execute_local_sql("""
             CREATE TABLE IF NOT EXISTS clientes (
-                id TEXT PRIMARY KEY UNIQUE NOT NULL, -- Assuming UUID or unique identifier from Sheet
+                id TEXT PRIMARY KEY UNIQUE NOT NULL,
                 nome TEXT UNIQUE NOT NULL,
                 tipo TEXT
             )
         """)
 
-        # --- Associações Table (Optional) ---
+        # --- Associações Table ---
         self._execute_local_sql("""
            CREATE TABLE IF NOT EXISTS colaborador_cliente (
                colaborador_username TEXT NOT NULL,
                cliente_nome TEXT NOT NULL,
-               PRIMARY KEY (colaborador_username, cliente_nome) -- Chave primária composta
+               PRIMARY KEY (colaborador_username, cliente_nome)
            )
         """)
-        print("Local SQLite tables created.")
 
-        
-        
-        # --- Documentos Table (Merged) ---
+        # --- Documentos Table (Merged) - UPDATED with new columns ---
         cols_config = config.DOCS_COLS
+        # Add default values for new columns if needed, TEXT allows NULL by default
         cols_sql = ", ".join([f'"{col}" TEXT' for col in cols_config])
-        cols_sql = cols_sql.replace('"id" TEXT', '"id" TEXT PRIMARY KEY') # Mantém id como PK
+        # Ensure id is PRIMARY KEY and handle is_synced
+        cols_sql = cols_sql.replace('"id" TEXT', '"id" TEXT PRIMARY KEY')
 
-        # Adiciona a nova coluna local
         create_docs_sql = f"""
             CREATE TABLE IF NOT EXISTS documentos (
                 {cols_sql},
-                is_synced INTEGER DEFAULT 0 NOT NULL -- 0 = não sincronizado, 1 = sincronizado/carregado do GSheet
+                is_synced INTEGER DEFAULT 0 NOT NULL -- 0 = local only/modified, 1 = synced from GSheet
             )
         """
         self._execute_local_sql(create_docs_sql)
-        print("Local SQLite tables created (incluindo tabela de documentos com is_synced).") # Mensagem única no final
+        print("Local SQLite tables created (incluindo tabela de documentos atualizada).")
 
     def _get_worksheet(self, sheet_name):
         """Safely gets a worksheet, returns None if not found."""
@@ -129,141 +120,70 @@ class HybridDBManager:
         """Loads data from a GSheet worksheet into a local SQLite table."""
         ws = self._get_worksheet(sheet_name)
         if not ws:
-            # Só mostra warning se a tabela não for opcional (como docs de usuário)
-            if table_name not in ["documentos", "colaborador_cliente"]: # Não mostrar para essas que podem não existir ainda
+            if table_name not in ["documentos", "colaborador_cliente"]:
                  st.warning(f"Skipping load for non-existent sheet: {sheet_name}")
             else:
                  print(f"Sheet '{sheet_name}' not found, skipping load into '{table_name}'.")
-            return True # Considera "sucesso" pois a planilha pode não existir
+            return True
 
         print(f"Loading data from GSheet '{sheet_name}' to local table '{table_name}' (mode: {if_exists})...")
         try:
-            # Usar get_values para não depender da primeira linha ser cabeçalho consistente
-            # E para funcionar com planilhas vazias
             all_values = ws.get_values()
-            if len(all_values) < 1: # Vazia ou sem cabeçalho
+            if len(all_values) < 1:
                 print(f"Sheet '{sheet_name}' is empty or has no header.")
-                if if_exists == 'replace':
-                     self._execute_local_sql(f"DELETE FROM {table_name}")
+                if if_exists == 'replace': self._execute_local_sql(f"DELETE FROM {table_name}")
                 return True
 
             header = all_values[0]
             data = all_values[1:]
 
-            if not data: # Apenas cabeçalho
+            if not data:
                 print(f"Sheet '{sheet_name}' has only a header.")
-                if if_exists == 'replace':
-                     self._execute_local_sql(f"DELETE FROM {table_name}")
+                if if_exists == 'replace': self._execute_local_sql(f"DELETE FROM {table_name}")
                 return True
 
             df = pd.DataFrame(data, columns=header)
 
-            # --- Column Validation/Alignment ---
-            # Usar as colunas ESPERADAS do config
+            # --- Column Validation/Alignment (Handles new columns) ---
             actual_header = df.columns.tolist()
-            df_selected = pd.DataFrame(columns=expected_cols) # Df vazio com colunas esperadas
+            # expected_cols is passed in, should be config.DOCS_COLS for documents
+            df_selected = pd.DataFrame(columns=expected_cols) # Empty DF with ALL expected cols from config
 
             cols_to_copy = [col for col in expected_cols if col in actual_header]
-            if not cols_to_copy:
-                 print(f"WARNING: No expected columns found in sheet '{sheet_name}'. Expected: {expected_cols}, Found: {actual_header}")
-                 if if_exists == 'replace': self._execute_local_sql(f"DELETE FROM {table_name}")
-                 return True # Continua, mas a tabela ficará vazia
+            # ... error check ...
+            df_selected[cols_to_copy] = df[cols_to_copy] # Copy existing cols
 
-
-            df_selected[cols_to_copy] = df[cols_to_copy] # Copia colunas existentes e esperadas
-
-            # Preenche colunas esperadas mas ausentes no sheet com None/NaN
+            # Fill missing expected columns (like new validation cols if sheet is old) with None
             missing_cols = [col for col in expected_cols if col not in actual_header]
             for col in missing_cols:
-                 df_selected[col] = None
+                df_selected[col] = None # <<< CORRECT: Handles loading old sheets
 
-            df = df_selected[expected_cols] # Garante a ordem correta
+            df = df_selected[expected_cols] # Ensure correct order
 
-            df = df.astype(str) # Converte tudo para string para SQLite
+            df = df.astype(str) # Convert all to string for SQLite
+
+            # --- Add is_synced column for 'documentos' table load ---
+            if table_name == "documentos":
+                df['is_synced'] = 1 # Mark as synced when loading from GSheet
 
             # Insert into SQLite table
+            # Use all expected_cols + is_synced for documentos
+            # df.to_sql uses the columns from the DataFrame `df` which now includes *all* expected_cols
             df.to_sql(table_name, self.local_conn, if_exists=if_exists, index=False, chunksize=1000)
             print(f"Successfully loaded {len(df)} rows from '{sheet_name}' to '{table_name}'.")
             return True
 
         except Exception as e:
             st.error(f"Error loading data from sheet '{sheet_name}': {e}")
+            print(f"Traceback during load_sheet_to_local_table for {sheet_name}:")
+            import traceback
+            traceback.print_exc()
             return False
+
 
     def _get_user_sheet_name(self, username):
         """Constructs the expected sheet name for a user's documents."""
         return f"{config.USER_DOCS_SHEET_PREFIX}{username}"
-
-    def load_data_for_session(self, username, role):
-        """Loads all necessary data from Google Sheets into local SQLite for the session."""
-        with st.spinner("Carregando dados da planilha... Por favor, aguarde."):
-            print(f"Starting data load for user: {username}, role: {role}")
-
-            # 1. Load Central Sheets (Replace mode)
-            load_success = self._load_sheet_to_local_table(config.SHEET_USERS, "usuarios", config.USERS_COLS, if_exists='replace')
-            if not load_success: st.stop()
-            load_success = self._load_sheet_to_local_table(config.SHEET_CLIENTS, "clientes", config.CLIENTS_COLS, if_exists='replace')
-            if not load_success: st.stop()
-            # Load associations
-            load_success = self._load_sheet_to_local_table(config.SHEET_ASSOC, "colaborador_cliente", config.ASSOC_COLS, if_exists='replace')
-            # Não parar se associações falharem, pode ser que não existam ainda. Warning pode ser útil.
-            if not load_success: print(f"Warning: Falha ao carregar a planilha de associações '{config.SHEET_ASSOC}'. Funcionalidades de filtro por cliente podem não funcionar.")
-
-            # 2. Load Document Sheets
-            # Clear local documents table first before loading potentially multiple sheets
-            self._execute_local_sql("DELETE FROM documentos")
-
-            if role == 'Admin':
-                print("Admin role detected, loading all user document sheets...")
-                users_df = pd.read_sql("SELECT username FROM usuarios WHERE role = 'Usuario'", self.local_conn)
-                all_user_sheets_loaded = True
-                if not users_df.empty:
-                    for user_row in users_df.itertuples():
-                        user_sheet_name = self._get_user_sheet_name(user_row.username)
-                        # Append data from each user sheet to the *same* local 'documentos' table
-                        if not self._load_user_docs_to_local(user_sheet_name):
-                              all_user_sheets_loaded = False # Track if any sheet failed
-                if not all_user_sheets_loaded:
-                     st.warning("Falha ao carregar dados de um ou mais usuários. A visão pode estar incompleta.")
-
-            elif role == 'Usuario':
-                user_sheet_name = self._get_user_sheet_name(username)
-                print(f"Loading document sheet for user '{username}': {user_sheet_name}")
-                if not self._load_user_docs_to_local(user_sheet_name):
-                    st.error(f"Não foi possível carregar seus dados de documentos da planilha '{user_sheet_name}'.")
-                    # Decide if app should stop or continue with potentially missing data
-                    st.stop()
-                    
-            elif role == 'Cliente':
-                # O Cliente não tem uma planilha de docs própria, ele vê dados gerais ou de um cliente específico
-                # Precisamos carregar os documentos relacionados ao cliente associado a este usuário.
-                # Assumindo que st.session_state['cliente_nome'] foi definido no login
-                cliente_nome_logado = st.session_state.get('cliente_nome')
-                if not cliente_nome_logado:
-                     st.error("Não foi possível determinar o cliente associado a este usuário.")
-                     st.stop()
-
-                st.warning("O carregamento de dados para Clientes ainda busca em todas as planilhas de usuário. Otimização necessária para buscar apenas dados relevantes.")
-                # TODO: Optimization - This currently loads ALL user sheets even for a Client.
-                # A better approach would be to query the 'documentos' sheets only for rows matching
-                # the st.session_state['cliente_nome']. This requires more complex gspread filtering
-                # or restructuring Sheets data (e.g., all docs in one sheet with client column).
-                # For now, we load all and filter locally, which is inefficient for the Client role.
-                users_df = pd.read_sql("SELECT username FROM usuarios WHERE role = 'Usuario'", self.local_conn)
-                if not users_df.empty:
-                    for user_row in users_df.itertuples():
-                        user_sheet_name = self._get_user_sheet_name(user_row.username)
-                        self._load_user_docs_to_local(user_sheet_name) # Appends to local DB
-
-
-            st.session_state['data_loaded'] = True
-            st.session_state['last_load_time'] = datetime.now()
-            print("Data load complete.")
-
-            # Set session state flags after successful load
-            st.session_state['data_loaded'] = True
-            st.session_state['last_load_time'] = datetime.now()
-            print("Data load complete.")
 
     def _load_user_docs_to_local(self, sheet_name):
         """Loads a specific user document sheet and APPENDS to the local 'documentos' table."""
@@ -305,8 +225,54 @@ class HybridDBManager:
               st.error(f"Error loading user docs from '{sheet_name}': {e}")
               return False
 
+    def load_data_for_session(self, username, role):
+        """Loads all necessary data from Google Sheets into local SQLite for the session."""
+        with st.spinner("Carregando dados da planilha... Por favor, aguarde."):
+            print(f"Starting data load for user: {username}, role: {role}")
 
-    # --- Local Read Methods (Operating on SQLite Cache) ---
+            # 1. Load Central Sheets (Replace mode)
+            load_success = self._load_sheet_to_local_table(config.SHEET_USERS, "usuarios", config.USERS_COLS, if_exists='replace')
+            if not load_success: st.stop()
+            load_success = self._load_sheet_to_local_table(config.SHEET_CLIENTS, "clientes", config.CLIENTS_COLS, if_exists='replace')
+            if not load_success: st.stop()
+            load_success = self._load_sheet_to_local_table(config.SHEET_ASSOC, "colaborador_cliente", config.ASSOC_COLS, if_exists='replace')
+            if not load_success: print(f"Warning: Falha ao carregar a planilha de associações '{config.SHEET_ASSOC}'.")
+
+            # 2. Load Document Sheets
+            # Clear local documents table first
+            self._execute_local_sql("DELETE FROM documentos")
+
+            user_sheets_to_load = []
+            if role == 'Admin':
+                print("Admin role: Loading all user document sheets...")
+                users_df = pd.read_sql("SELECT username FROM usuarios WHERE role = 'Usuario'", self.local_conn)
+                if not users_df.empty:
+                    user_sheets_to_load = [self._get_user_sheet_name(uname) for uname in users_df['username']]
+            elif role == 'Usuario':
+                user_sheets_to_load = [self._get_user_sheet_name(username)]
+                print(f"Loading document sheet for user '{username}': {user_sheets_to_load[0]}")
+            elif role == 'Cliente':
+                # Load ALL user sheets for now, filtering happens locally.
+                # TODO: Future optimization needed here.
+                st.warning("Carregamento para Clientes ainda busca em todas as planilhas de usuário.")
+                users_df = pd.read_sql("SELECT username FROM usuarios WHERE role = 'Usuario'", self.local_conn)
+                if not users_df.empty:
+                    user_sheets_to_load = [self._get_user_sheet_name(uname) for uname in users_df['username']]
+
+            all_docs_loaded = True
+            for sheet_name in user_sheets_to_load:
+                 if not self._load_sheet_to_local_table(sheet_name, "documentos", config.DOCS_COLS, if_exists='append'):
+                      all_docs_loaded = False # Keep track if any sheet fails
+
+            if not all_docs_loaded:
+                st.warning("Falha ao carregar dados de um ou mais usuários. A visão pode estar incompleta.")
+
+            st.session_state['data_loaded'] = True
+            st.session_state['last_load_time'] = datetime.now()
+            print(f"Data load complete at {st.session_state['last_load_time']}.")
+
+
+    # --- Local Read Methods ---
 
     def buscar_usuario_local(self, username):
         """Fetches a user from the local SQLite cache."""
@@ -314,27 +280,30 @@ class HybridDBManager:
 
     def listar_clientes_local(self, colaborador_username=None):
          """Lists clients from local cache, optionally filtered by assignment."""
+         # ... (keep existing implementation) ...
          if colaborador_username:
-             # Find clients assigned to this collaborator
              query = """
                  SELECT c.id, c.nome, c.tipo
                  FROM clientes c
-                 JOIN colaborador_cliente ca ON c.nome = ca.cliente_nome COLLATE NOCASE -- Join by name, case-insensitive
+                 JOIN colaborador_cliente ca ON c.nome = ca.cliente_nome COLLATE NOCASE
                  WHERE ca.colaborador_username = ? COLLATE NOCASE
                  ORDER BY c.nome
              """
              return self._execute_local_sql(query, (colaborador_username,))
          else:
-             # List all clients (for Admin or general dropdowns)
              return self._execute_local_sql("SELECT id, nome, tipo FROM clientes ORDER BY nome")
+
 
     def listar_colaboradores_local(self):
         """Lists all 'Usuario' role users from local cache."""
+        # ... (keep existing implementation) ...
         return self._execute_local_sql("SELECT username, nome_completo FROM usuarios WHERE role = 'Usuario' ORDER BY nome_completo")
+
 
     def get_kpi_data_local(self, colaborador_username=None, cliente_nome=None, periodo_dias=None):
          """Calculates KPIs based on the local 'documentos' table, with more filters."""
-         base_query = "SELECT status, COUNT(*) as count FROM documentos WHERE 1=1" # Start with true condition
+         # ... (keep existing implementation, make sure status names match config.VALID_STATUSES) ...
+         base_query = "SELECT status, COUNT(*) as count FROM documentos WHERE 1=1"
          params = []
 
          if colaborador_username:
@@ -343,13 +312,12 @@ class HybridDBManager:
          if cliente_nome:
               base_query += " AND cliente_nome = ? COLLATE NOCASE"
               params.append(cliente_nome)
+         # ... (period filter remains the same) ...
          if periodo_dias:
-             # SQLite date filtering needs ISO format or Julian day typically
-             # Assuming 'data_registro' is stored as TEXT in ISO format
              try:
                 cutoff_date = datetime.now() - pd.Timedelta(days=periodo_dias)
                 cutoff_iso = cutoff_date.isoformat()
-                base_query += " AND data_registro >= ?" # Filter based on registration date
+                base_query += " AND data_registro >= ?"
                 params.append(cutoff_iso)
              except Exception as e:
                 print(f"Warning: Could not apply date filter (days={periodo_dias}): {e}")
@@ -358,15 +326,14 @@ class HybridDBManager:
          query = f"{base_query} GROUP BY status"
          results = self._execute_local_sql(query, tuple(params) if params else None)
 
-         # Rename KPI keys to match client layout image
+         # Rename KPI keys to match client layout image (adjust if needed)
          kpi = {'docs_enviados': 0, 'docs_publicados': 0, 'docs_pendentes': 0, 'docs_invalidos': 0}
          if results:
-             # Map based on status values in your data
              status_map = {
                   'Enviado': 'docs_enviados',
-                  'Validado': 'docs_publicados', # Assuming 'Validado' means 'Publicado'
+                  'Validado': 'docs_publicados', # Maps to 'Publicados' KPI
                   'Pendente': 'docs_pendentes',
-                  'Novo': 'docs_pendentes', # Treat 'Novo' as pending for KPI?
+                  'Novo': 'docs_pendentes', # Include 'Novo' in 'Pendente'? Or have a separate KPI?
                   'Inválido': 'docs_invalidos'
              }
              for row in results:
@@ -374,8 +341,34 @@ class HybridDBManager:
                   if status_key: kpi[status_key] += row['count']
 
          return kpi
-     
-         
+
+
+    def get_criterios_atendidos_cliente_local(self, cliente_nome):
+        """Gets criteria counts for a client from local data."""
+        # Assumes 'dimensao_criterio' holds values like 'Essencial', 'Obrigatório', etc.
+        query = """
+            SELECT
+                dimensao_criterio,
+                COUNT(id) as total_docs,
+                SUM(CASE WHEN status = 'Validado' THEN 1 ELSE 0 END) as docs_validados
+            FROM documentos
+            WHERE cliente_nome = ? AND dimensao_criterio IN ('Essencial', 'Obrigatório', 'Recomendado') -- Match case/values
+            GROUP BY dimensao_criterio
+        """
+        results = self._execute_local_sql(query, (cliente_nome,))
+
+        crit_data = {}
+        tipos_criterio_config = list(config.CRITERIA_COLORS.keys()) # Get from config
+        for crit in tipos_criterio_config: crit_data[crit] = {'total': 0, 'atendidos': 0}
+
+        if results:
+            for row in results:
+                 tipo = row['dimensao_criterio']
+                 if tipo in crit_data:
+                     crit_data[tipo]['total'] = row['total_docs'] or 0
+                     crit_data[tipo]['atendidos'] = row['docs_validados'] or 0
+        return crit_data
+
     def calcular_pontuacao_colaboradores_local(self):
         """Calculates collaborator scores based on local SQLite data."""
         # This SQL is more complex and joins usuarios and documentos (local tables)
@@ -409,7 +402,7 @@ class HybridDBManager:
         })
         
         return df_display.set_index('Colaborador')
-        
+    
     def get_docs_por_periodo_cliente_local(self, cliente_nome, grupo='W'):
         """Gets validated docs count per period for a client from local data."""
         # Assuming 'data_registro' is the relevant date column in 'documentos'
@@ -457,51 +450,46 @@ class HybridDBManager:
              return df[['periodo', 'contagem']]
 
         return df[['periodo', 'contagem', 'periodo_dt']]
-        
-    def get_criterios_atendidos_cliente_local(self, cliente_nome):
-        """Gets criteria counts for a client from local data."""
-        # Assumes 'dimensao_criterio' holds values like 'Essencial', 'Obrigatório', etc.
-        query = """
-            SELECT
-                dimensao_criterio,
-                COUNT(id) as total_docs,
-                SUM(CASE WHEN status = 'Validado' THEN 1 ELSE 0 END) as docs_validados
-            FROM documentos
-            WHERE cliente_nome = ? AND dimensao_criterio IN ('Essencial', 'Obrigatório', 'Recomendado') -- Match case/values
-            GROUP BY dimensao_criterio
-        """
-        results = self._execute_local_sql(query, (cliente_nome,))
-
-        crit_data = {}
-        tipos_criterio_config = list(config.CRITERIA_COLORS.keys()) # Get from config
-        for crit in tipos_criterio_config: crit_data[crit] = {'total': 0, 'atendidos': 0}
-
-        if results:
-            for row in results:
-                 tipo = row['dimensao_criterio']
-                 if tipo in crit_data:
-                     crit_data[tipo]['total'] = row['total_docs'] or 0
-                     crit_data[tipo]['atendidos'] = row['docs_validados'] or 0
-        return crit_data
-
+    
     def get_documentos_usuario_local(self, username, synced_status=None):
-        """
-        Retrieves document entries for a specific user from local SQLite.
-        Can filter by sync status (0=unsynced, 1=synced, None=all).
-        """
+        """Retrieves document entries for a specific user from local SQLite. """
+        # ... (keep existing implementation) ...
         query = "SELECT * FROM documentos WHERE colaborador_username = ? COLLATE NOCASE"
         params = [username]
         if synced_status is not None and synced_status in [0, 1]:
             query += " AND is_synced = ?"
             params.append(synced_status)
-        query += " ORDER BY data_registro DESC, id DESC" # Ordena pelos mais recentes
+        query += " ORDER BY data_registro DESC, id DESC"
         return self._execute_local_sql(query, tuple(params))
 
     def get_unsynced_documents_local(self, username):
         """ Fetches only locally added documents that haven't been synced. """
+        # ... (keep existing implementation) ...
         return self.get_documentos_usuario_local(username, synced_status=0)
 
-    @st.cache_data(ttl=900) # Cache por 15 minutos para reduzir chamadas API
+
+    # --- NEW: Method to get ALL documents for Admin ---
+    def get_all_documents_local(self, status_filter=None, user_filter=None, client_filter=None):
+        """ Fetches all documents from local cache with optional filters. """
+        query = "SELECT * FROM documentos WHERE 1=1"
+        params = []
+
+        if status_filter and status_filter != "Todos":
+            query += " AND status = ?"
+            params.append(status_filter)
+        if user_filter: # Assumes user_filter is the username
+            query += " AND colaborador_username = ? COLLATE NOCASE"
+            params.append(user_filter)
+        if client_filter and client_filter != "Todos":
+             query += " AND cliente_nome = ? COLLATE NOCASE"
+             params.append(client_filter)
+
+        query += " ORDER BY data_registro DESC, colaborador_username, cliente_nome" # Example ordering
+        results = self._execute_local_sql(query, tuple(params) if params else None)
+        return [dict(row) for row in results] if results else []
+
+
+    @st.cache_data(ttl=300) # Cache por 2 minutos para reduzir chamadas API
     def calcular_pontuacao_colaboradores_gsheet(_self):
         """
         Calcula a pontuação, contagem e percentual de links validados dos colaboradores
@@ -612,205 +600,210 @@ class HybridDBManager:
         if not doc_data.get('id'):
             doc_data['id'] = str(uuid.uuid4())
 
-        # Inclui o campo is_synced
+        # --- UPDATED: Include new columns with default None ---
         all_expected_local_cols = config.DOCS_COLS + ['is_synced']
 
         for col in all_expected_local_cols:
-             doc_data.setdefault(col, None)
-             if col == 'is_synced': # <<< Garante que novos registros sejam marcados como NÃO sincronizados
-                 doc_data[col] = 0
-             else:
-                 doc_data[col] = str(doc_data[col]) if doc_data[col] is not None else None
+             # Set defaults for new validation columns if not provided
+             if col in ["data_validacao", "validado_por", "observacoes_validacao"] and col not in doc_data:
+                  doc_data[col] = None
+             # Handle is_synced specifically
+             elif col == 'is_synced':
+                  doc_data[col] = 0 # Mark as unsynced on local add
+             # Ensure other required cols exist (or set default)
+             elif col not in doc_data:
+                 doc_data[col] = None # Default to None if missing entirely
+
+             # Convert value to string if not None (for SQLite TEXT)
+             if doc_data[col] is not None:
+                 doc_data[col] = str(doc_data[col])
 
 
         ordered_values = [doc_data.get(col) for col in all_expected_local_cols]
         placeholders = ", ".join(["?"] * len(all_expected_local_cols))
-        cols_str = ", ".join([f'"{col}"' for col in all_expected_local_cols])
+        cols_str = ", ".join([f'"{col}"' for col in all_expected_local_cols]) # Quote column names
 
         query = f"INSERT INTO documentos ({cols_str}) VALUES ({placeholders})"
-        rowcount = self._execute_local_sql(query, tuple(ordered_values), fetch_mode=None)
 
-        if rowcount == 1:
-            st.session_state['unsaved_changes'] = True
-            print(f"Documento local adicionado (unsynced): {doc_data.get('id')}")
-            return True
-        else:
-            st.error("Falha ao adicionar documento localmente.")
-            return False
+        try:
+            rowcount = self._execute_local_sql(query, tuple(ordered_values), fetch_mode=None)
+            if rowcount == 1:
+                st.session_state['unsaved_changes'] = True
+                print(f"Documento local adicionado (unsynced): {doc_data.get('id')}")
+                return True
+            else:
+                st.error("Falha ao adicionar documento localmente (rowcount != 1).")
+                return False
+        except Exception as e:
+             st.error(f"Erro ao executar inserção local: {e}")
+             return False
 
 
     # --- Write-Back to Google Sheets ---
 
     def save_user_data_to_sheets(self, username):
         """
-        Saves all documents for the specified user FROM the local SQLite cache
-        TO their dedicated Google Sheet, overwriting the sheet's content.
-        Also updates the last_sync_timestamp for the user.
+        Saves all UNVALIDATED documents for the user from local SQLite to GSheet,
+        OVERWRITING the sheet's content ONLY with non-validated docs from local.
+        NOTE: This OVERWRITE approach is DANGEROUS if Admins validate directly on the sheet.
+        The new `update_document_status_gsheet_and_local` is preferred for validation changes.
+        This save function should primarily be for the USER syncing their NEW/PENDING entries.
+        Consider filtering what gets saved here (e.g., only is_synced=0).
         """
+        # --- MODIFIED: Only save locally modified/new rows (is_synced = 0) ---
         user_sheet_name = self._get_user_sheet_name(username)
-        print(f"Iniciando salvamento para o usuário '{username}' na planilha '{user_sheet_name}'...")
-        with st.spinner(f"Salvando dados para {username} na planilha..."):
-            # 1. Get user's data from local SQLite
-            query = "SELECT * FROM documentos WHERE colaborador_username = ?"
-            user_docs_local = self._execute_local_sql(query, (username,))
-            
-            # Check if there are rows to insert
-            if user_docs_local:
-                 # Convert SQLite Row objects to list of lists for gspread
-                 # Important: Ensure the order matches EXACTLY the columns in the GSheet
-                 df_local = pd.DataFrame([dict(row) for row in user_docs_local])
-                 # Select and order columns according to config.DOCS_COLS
-                 df_to_save = df_local[config.DOCS_COLS].astype(str) # Convert all to string for Sheets
-                 
-                 # Prepare list of lists (header + data)
-                 data_to_write = [config.DOCS_COLS] + df_to_save.values.tolist()
-                 num_rows = len(data_to_write)
-                 print(f"Preparado {num_rows - 1} registros para salvar em '{user_sheet_name}'.")
-            else:
-                 # If user has no docs locally, just write the header to clear the sheet
-                 data_to_write = [config.DOCS_COLS]
-                 num_rows = 1
-                 print(f"Nenhum registro local para '{username}', planilha '{user_sheet_name}' será limpa/terá apenas cabeçalho.")
+        print(f"Iniciando salvamento de dados LOCAIS (is_synced=0) para '{username}' na planilha '{user_sheet_name}'...")
+        with st.spinner(f"Salvando dados locais de {username} na planilha..."):
+            # 1. Get ONLY unsynced user's data from local SQLite
+            # Select ONLY the columns defined in config.DOCS_COLS (no is_synced)
+            cols_to_select_str = ", ".join([f'"{col}"' for col in config.DOCS_COLS])
+            query = f"SELECT {cols_to_select_str} FROM documentos WHERE colaborador_username = ? AND is_synced = 0"
+            user_docs_local_unsynced = self._execute_local_sql(query, (username,))
 
+            if not user_docs_local_unsynced:
+                 st.info("Nenhum dado local novo ou modificado para salvar.")
+                 st.session_state['unsaved_changes'] = False # Clear flag if nothing to save
+                 return True # Nothing to do is a success case here
+
+            # Convert SQLite Row objects to list of lists for gspread
+            df_local = pd.DataFrame([dict(row) for row in user_docs_local_unsynced])
+            # Ensure columns are in the correct order as per config.DOCS_COLS
+            df_to_save = df_local[config.DOCS_COLS].astype(str)
+
+            # Prepare list of lists (header + data)
+            data_to_write = [config.DOCS_COLS] + df_to_save.values.tolist()
+            num_rows_to_write = len(data_to_write) # Includes header
+            print(f"Preparado {num_rows_to_write - 1} registros locais para salvar/sobrescrever em '{user_sheet_name}'.")
 
             # 2. Get or Create the target Google Sheet Worksheet
+            # ... (keep existing get/create worksheet logic) ...
             try:
                 ws = self.spreadsheet.worksheet(user_sheet_name)
                 print(f"Planilha '{user_sheet_name}' encontrada.")
             except gspread.exceptions.WorksheetNotFound:
                  print(f"Planilha '{user_sheet_name}' não encontrada. Tentando criar...")
                  try:
-                      # Create sheet with appropriate columns based on config.DOCS_COLS
-                      # Add rows based on expected data size + buffer? Or start small?
-                      ws = self.spreadsheet.add_worksheet(title=user_sheet_name, rows=max(100, num_rows + 10), cols=len(config.DOCS_COLS))
+                      ws = self.spreadsheet.add_worksheet(title=user_sheet_name, rows=max(100, num_rows_to_write + 10), cols=len(config.DOCS_COLS))
                       ws.update([config.DOCS_COLS]) # Write header immediately
                       print(f"Planilha '{user_sheet_name}' criada.")
                  except Exception as create_e:
                       st.error(f"Falha ao criar planilha '{user_sheet_name}': {create_e}")
-                      return False # Cannot proceed without the sheet
+                      return False
 
             # 3. Clear and Write data to the Google Sheet
+            # --- WARNING: This overwrites the sheet ---
             try:
-                # ws.clear() # Clear the sheet first
-                # ws.update(data_to_write, value_input_option='USER_ENTERED')
-                
-                # Optimized Write: Clear contents then update in one call if possible
-                # Ensure range is large enough or resize if needed.
-                # Safer approach: Clear, then update cells. Adjust range size dynamically.
                 existing_rows = ws.row_count
                 needed_rows = len(data_to_write)
                 if needed_rows > existing_rows:
-                     ws.add_rows(needed_rows - existing_rows) # Add necessary rows
-                
-                # Define the target range string
+                     ws.add_rows(needed_rows - existing_rows)
+
                 range_str = f'A1:{gspread.utils.rowcol_to_a1(needed_rows, len(config.DOCS_COLS))}'
-                
-                # Clear previous content ONLY in the needed range + maybe a bit below
-                # Be careful not to clear excessively if sheet is large
-                clear_range_end_row = max(needed_rows, 50) # Clear at least 50 rows or needed rows
-                clear_range_str = f'A1:{gspread.utils.rowcol_to_a1(clear_range_end_row, len(config.DOCS_COLS))}'
-                # Generate list of empty cells for clearing - This might be slow for large ranges
-                # empty_cells = [['' for _ in range(len(config.DOCS_COLS))] for _ in range(clear_range_end_row)]
-                # ws.update(clear_range_str, empty_cells, value_input_option='USER_ENTERED') # This could be slow
-                # A faster clear might be batch clear but requires more setup, ws.clear() might be okay
-                ws.clear() # Simpler, but clears formatting too.
-
-                # Write the new data
+                ws.clear() # <<< Clears everything
                 ws.update(range_str, data_to_write, value_input_option='USER_ENTERED')
+                print(f"Dados (is_synced=0) salvos com sucesso em '{user_sheet_name}' (planilha sobrescrita).")
 
-                print(f"Dados salvos com sucesso em '{user_sheet_name}'.")
+                # 4. Mark the saved rows as synced LOCALLY
+                saved_ids = df_to_save['id'].tolist()
+                if saved_ids:
+                    placeholders = ','.join('?' * len(saved_ids))
+                    update_query = f"UPDATE documentos SET is_synced = 1 WHERE id IN ({placeholders}) AND colaborador_username = ?"
+                    rows_updated = self._execute_local_sql(update_query, tuple(saved_ids + [username]), fetch_mode=None)
+                    print(f"{rows_updated} registros marcados como sincronizados localmente.")
 
-                # 4. Update last_sync_timestamp for the user
+                # 5. Update last_sync_timestamp for the user
                 if not self._update_last_sync_time_gsheet(username):
-                    st.warning("Dados salvos na planilha de documentos, mas falha ao atualizar o timestamp de sincronização.")
-                    # Data is saved, but admin view might be slightly off.
+                    st.warning("Dados salvos, mas falha ao atualizar timestamp de sincronização.")
 
                 st.session_state['unsaved_changes'] = False # Reset flag
                 return True
             except Exception as write_e:
-                st.error(f"Falha ao salvar dados na planilha '{user_sheet_name}': {write_e}")
+                st.error(f"Falha ao salvar/sobrescrever dados na planilha '{user_sheet_name}': {write_e}")
                 return False
 
     def save_selected_docs_to_sheets(self, username, list_of_doc_ids):
-         """ Appends selected documents (by ID) to the user's Google Sheet and marks them as synced locally. """
-         if not list_of_doc_ids:
-              st.warning("Nenhum documento selecionado para salvar.")
-              return False # Nada a fazer
-
-         user_sheet_name = self._get_user_sheet_name(username)
-         print(f"Iniciando salvamento seletivo para '{username}' na planilha '{user_sheet_name}'...")
-
-         # 1. Get full data for selected IDs from local DB
-         placeholders = ','.join('?' * len(list_of_doc_ids))
-         # Seleciona APENAS as colunas que vão para o GSheet (config.DOCS_COLS)
-         cols_to_select_str = ", ".join([f'"{col}"' for col in config.DOCS_COLS])
-         query = f"""
-             SELECT {cols_to_select_str}
-             FROM documentos
-             WHERE colaborador_username = ? COLLATE NOCASE AND id IN ({placeholders}) AND is_synced = 0
-         """
-         params = tuple([username] + list_of_doc_ids)
-         docs_to_save = self._execute_local_sql(query, params)
-
-         if not docs_to_save:
-              st.error("Não foi possível encontrar os documentos selecionados não sincronizados no cache local.")
-              return False
-
-         # 2. Prepare data for gspread append_rows (list of lists, no header, only config columns)
-         data_to_append = []
-         saved_ids_confirm = [] # Para marcar como synced localmente depois
-         for row in docs_to_save:
-              row_dict = dict(row)
-              # Garante a ordem correta das colunas do config
-              ordered_row_values = [str(row_dict.get(col, '')) for col in config.DOCS_COLS]
-              data_to_append.append(ordered_row_values)
-              saved_ids_confirm.append(row_dict.get('id')) # Guarda o ID
-
-         if not data_to_append:
-             st.error("Falha ao preparar dados para envio (formato inesperado).")
+        """ Appends selected unsynced documents (by ID) to the user's Google Sheet and marks them as synced locally. """
+        # --- UPDATED: Include new columns ---
+        if not list_of_doc_ids:
+             st.warning("Nenhum documento selecionado para salvar.")
              return False
 
-         # 3. Get user's worksheet (Create if not exists? Talvez não deveria criar aqui, só no cadastro)
-         ws = self._get_worksheet(user_sheet_name)
-         if not ws:
-              st.error(f"Planilha do usuário '{user_sheet_name}' não encontrada. Não é possível salvar.")
-              return False # Não salva se a planilha destino não existe
+        user_sheet_name = self._get_user_sheet_name(username)
+        print(f"Iniciando salvamento seletivo (append) para '{username}' na planilha '{user_sheet_name}'...")
 
-         # 4. Append rows to Google Sheet
-         try:
-              print(f"Anexando {len(data_to_append)} registros na planilha '{user_sheet_name}'...")
-              ws.append_rows(data_to_append, value_input_option='USER_ENTERED', insert_data_option='INSERT_ROWS', table_range='A1') # Anexa no final
-              print("Registros anexados com sucesso na planilha.")
+        # 1. Get full data for selected IDs from local DB (only unsynced)
+        placeholders = ','.join('?' * len(list_of_doc_ids))
+        # Select ALL columns defined in config.DOCS_COLS
+        cols_to_select_str = ", ".join([f'"{col}"' for col in config.DOCS_COLS]) # <<< CORRECT: Selects all cols
+        query = f"""
+            SELECT {cols_to_select_str}
+            FROM documentos
+            WHERE colaborador_username = ? COLLATE NOCASE AND id IN ({placeholders}) AND is_synced = 0
+        """
+        params = tuple([username] + list_of_doc_ids)
+        docs_to_save = self._execute_local_sql(query, params)
 
-              # 5. Mark rows as synced locally
-              if saved_ids_confirm:
-                    placeholders_update = ','.join('?' * len(saved_ids_confirm))
-                    update_query = f"UPDATE documentos SET is_synced = 1 WHERE id IN ({placeholders_update}) AND colaborador_username = ?"
-                    update_params = tuple(saved_ids_confirm + [username])
-                    rows_updated = self._execute_local_sql(update_query, update_params, fetch_mode=None)
-                    print(f"{rows_updated} registros marcados como sincronizados localmente.")
-                    if rows_updated != len(saved_ids_confirm):
-                         st.warning("A contagem de registros marcados como sincronizados localmente não bate com a contagem enviada.")
+        if not docs_to_save:
+             st.error("Não foi possível encontrar os documentos selecionados não sincronizados no cache local.")
+             return False
 
-                    # 6. Update global sync timestamp
-                    self._update_last_sync_time_gsheet(username)
+        # 2. Prepare data for gspread append_rows
+        data_to_append = []
+        saved_ids_confirm = []
+        for row in docs_to_save:
+            row_dict = dict(row)
+            # Ensure correct order based on config.DOCS_COLS
+            # Includes new cols, fetching their values (likely None) from local DB
+            ordered_row_values = [str(row_dict.get(col, '')) for col in config.DOCS_COLS] # <<< CORRECT
+            data_to_append.append(ordered_row_values)
+            saved_ids_confirm.append(row_dict.get('id'))
 
-                    # 7. Check if there are still unsaved changes
-                    remaining_unsaved = self.get_unsynced_documents_local(username)
-                    if not remaining_unsaved:
-                         st.session_state['unsaved_changes'] = False # Só muda se TUDO foi salvo
-                    else:
-                         st.session_state['unsaved_changes'] = True # Mantém True se ainda há pendentes
+        if not data_to_append:
+            st.error("Falha ao preparar dados para envio.")
+            return False
 
-                    return True # Sucesso geral
-              else:
-                    st.warning("Nenhum ID confirmado para marcar como sincronizado localmente.")
-                    return False # Algo deu errado
+        # 3. Get user's worksheet
+        ws = self._get_worksheet(user_sheet_name)
+        if not ws:
+             st.error(f"Planilha do usuário '{user_sheet_name}' não encontrada.")
+             # Alternative: Try creating it? Risky if user exists but sheet was deleted.
+             # For now, fail if sheet doesn't exist.
+             return False
 
-         except Exception as append_e:
-              st.error(f"Falha ao anexar dados na planilha '{user_sheet_name}': {append_e}")
-              # Não marcar como sincronizado localmente se a escrita no GSheet falhou
-              return False
+        # 4. Append rows to Google Sheet
+        try:
+             print(f"Anexando {len(data_to_append)} registros na planilha '{user_sheet_name}'...")
+             # Find first empty row (crude way, better methods exist)
+             # Or just use append_rows which should handle it
+             ws.append_rows(data_to_append, value_input_option='USER_ENTERED', insert_data_option='INSERT_ROWS', table_range='A1')
+             print("Registros anexados com sucesso na planilha.")
+
+             # 5. Mark rows as synced locally
+             if saved_ids_confirm:
+                 placeholders_update = ','.join('?' * len(saved_ids_confirm))
+                 update_query = f"UPDATE documentos SET is_synced = 1 WHERE id IN ({placeholders_update}) AND colaborador_username = ?"
+                 update_params = tuple(saved_ids_confirm + [username])
+                 rows_updated = self._execute_local_sql(update_query, update_params, fetch_mode=None)
+                 print(f"{rows_updated} registros marcados como sincronizados localmente.")
+                 if rows_updated != len(saved_ids_confirm):
+                      st.warning("Contagem de registros marcados localmente não bate com a contagem enviada.")
+
+                 # 6. Update global sync timestamp
+                 self._update_last_sync_time_gsheet(username)
+
+                 # 7. Check if there are still unsaved changes
+                 remaining_unsaved = self.get_unsynced_documents_local(username)
+                 st.session_state['unsaved_changes'] = bool(remaining_unsaved)
+
+                 return True # Success
+             else:
+                 st.warning("Nenhum ID confirmado para marcar como sincronizado localmente.")
+                 return False
+
+        except Exception as append_e:
+             st.error(f"Falha ao anexar dados na planilha '{user_sheet_name}': {append_e}")
+             return False
+
 
     def _update_last_sync_time_gsheet(self, username):
         """Updates the 'last_sync_timestamp' column in the main 'usuarios' sheet."""
@@ -844,7 +837,95 @@ class HybridDBManager:
         except Exception as e:
             st.error(f"Erro ao atualizar timestamp para {username} na planilha 'usuarios': {e}")
             return False
-            
+
+    # --- NEW: Method to Update Document Status (Admin Validation) ---
+    def update_document_status_gsheet_and_local(self, doc_id, new_status, admin_username, observacoes=""):
+        """
+        Updates the status, validation date, and validator for a specific document
+        both in the corresponding Google Sheet and the local cache.
+        """
+        print(f"Attempting to update doc_id '{doc_id}' to status '{new_status}' by '{admin_username}'...")
+
+        # 1. Find the document locally to get the original collaborator's username
+        local_doc = self._execute_local_sql("SELECT colaborador_username FROM documentos WHERE id = ?", (doc_id,), fetch_mode="one")
+        if not local_doc:
+             st.error(f"Documento com ID '{doc_id}' não encontrado localmente.")
+             return False
+
+        colaborador_username = local_doc['colaborador_username']
+        user_sheet_name = self._get_user_sheet_name(colaborador_username)
+
+        # 2. Get the specific user's worksheet
+        ws = self._get_worksheet(user_sheet_name)
+        if not ws:
+             st.error(f"Planilha '{user_sheet_name}' para o colaborador '{colaborador_username}' não encontrada.")
+             return False
+
+        # 3. Find the row in the Google Sheet based on doc_id
+        try:
+            # Find the ID column index (assuming it's the first column as per config)
+            id_col_index = config.DOCS_COLS.index('id') + 1
+            cell = ws.find(doc_id, in_column=id_col_index)
+            if not cell:
+                 st.error(f"Documento com ID '{doc_id}' não encontrado na planilha '{user_sheet_name}'.")
+                 # Maybe it was deleted from the sheet? Or ID mismatch?
+                 return False
+            row_index = cell.row
+            print(f"Found doc_id '{doc_id}' in sheet '{user_sheet_name}' at row {row_index}.")
+
+            # 4. Find column indices for fields to update
+            status_col = config.DOCS_COLS.index('status') + 1
+            val_date_col = config.DOCS_COLS.index('data_validacao') + 1      
+            val_by_col = config.DOCS_COLS.index('validado_por') + 1         
+            obs_col = config.DOCS_COLS.index('observacoes_validacao') + 1 
+
+            # 5. Prepare update data
+            now_str = datetime.now().isoformat(sep=' ', timespec='seconds')
+            updates_batch = [
+                {'range': gspread.utils.rowcol_to_a1(row_index, status_col), 'values': [[new_status]]},
+                {'range': gspread.utils.rowcol_to_a1(row_index, val_date_col), 'values': [[now_str]]},
+                {'range': gspread.utils.rowcol_to_a1(row_index, val_by_col), 'values': [[admin_username]]},
+                {'range': gspread.utils.rowcol_to_a1(row_index, obs_col), 'values': [[observacoes]]}
+            ]
+
+            # 6. Update Google Sheet using batch update for efficiency
+            ws.batch_update(updates_batch, value_input_option='USER_ENTERED')
+            print(f"GSheet row {row_index} updated successfully.")
+
+            # 7. Update local SQLite database
+            update_local_query = """
+                UPDATE documentos
+                SET status = ?, data_validacao = ?, validado_por = ?, observacoes_validacao = ?, is_synced = 1
+                WHERE id = ?
+            """
+            # Mark as synced=1 because the change originated from an action meant to sync
+            rows_updated = self._execute_local_sql(
+                update_local_query,
+                (new_status, now_str, admin_username, observacoes, doc_id),
+                fetch_mode=None
+            )
+
+            if rows_updated == 1:
+                print(f"Local document ID '{doc_id}' updated successfully.")
+                # No need to set unsaved_changes = True here, as it was synced.
+                return True
+            else:
+                st.error(f"Falha ao atualizar o registro local para o ID '{doc_id}' (linhas afetadas: {rows_updated}). A planilha foi atualizada.")
+                # Data inconsistency state!
+                return False
+
+        except gspread.exceptions.APIError as api_err:
+             st.error(f"Erro de API do Google ao atualizar status para doc ID '{doc_id}': {api_err}")
+             return False
+        except ValueError as ve: # Handles if a column name isn't found in config.DOCS_COLS
+             st.error(f"Erro de configuração: coluna não encontrada em DOCS_COLS. {ve}")
+             return False
+        except Exception as e:
+             st.error(f"Erro inesperado ao atualizar status para doc ID '{doc_id}': {e}")
+             import traceback
+             traceback.print_exc()
+             return False
+
     # --- Admin specific methods ---
     def get_all_users_local_with_sync(self):
         """Gets all users from local cache including sync time."""
@@ -1082,9 +1163,11 @@ class HybridDBManager:
     def _hash_password(self, password):
         """Hashes a password using SHA256."""
         return hashlib.sha256(password.encode('utf-8')).hexdigest()
-# --- Authentication Class (Leveraging local reads) ---
 
+
+# --- Authentication Class (Leveraging local reads) ---
 class Autenticador:
+    # ... (keep existing __init__, _hash_password, _verificar_senha) ...
     def __init__(self, db_manager: HybridDBManager):
         self.gerenciador_bd = db_manager
 
@@ -1095,22 +1178,18 @@ class Autenticador:
     def _verificar_senha(self, stored_hashed_password, provided_password):
         return stored_hashed_password == self._hash_password(provided_password)
 
+
     def login(self, username, password):
-        # Fetch user directly from the LOCAL cache AFTER data is loaded
-        # This requires the DB Manager to be instantiated and loaded first.
-        # We handle loading in streamlit_app.py after potential login success.
-        
-        # TEMPORARY read from sheets just for login check before full load
-        # This is slightly inefficient but avoids loading ALL data just to fail login
-        print(f"Tentativa de login para {username}. Verificando na planilha...")
+        # ... (keep existing login logic, it already loads data post-login) ...
+        print(f"Attempting login for {username}. Verifying against GSheet...")
         users_ws = self.gerenciador_bd._get_worksheet(config.SHEET_USERS)
-        if not users_ws: return False, "Erro: Planilha de usuários não acessível."
-        
+        if not users_ws: return False, "Error: User worksheet not accessible."
+
         success, user_info_or_error = self._check_login_on_sheets(username, password)
 
         if success:
-             user_info = user_info_or_error # Now it's a dict
-             print("Login verificado. Procedendo para carga de dados e definição de sessão...")
+             user_info = user_info_or_error # It's a dict
+             print("Login verified. Proceeding to data loading and session setup...")
              # --- Set basic session state BEFORE loading ---
              st.session_state['logged_in'] = True
              st.session_state['username'] = user_info['username']
@@ -1120,102 +1199,109 @@ class Autenticador:
 
              # --- Specific logic for 'Cliente' role ---
              if user_info['role'] == 'Cliente':
-                  # Assume username IS the client name for login association
                   cliente_login_nome = user_info['username']
-                  # Store the presumed client name for data loading/filtering
                   st.session_state['cliente_nome'] = cliente_login_nome
-                  print(f"Login Cliente detectado. Associado ao cliente: {cliente_login_nome}")
-                  # Optional: Verify this client exists in the clientes sheet/cache later
-                  # cliente_check = self.gerenciador_bd._execute_local_sql("SELECT id FROM clientes WHERE nome = ? COLLATE NOCASE", (cliente_login_nome,), fetch_mode='one')
-                  # if not cliente_check: st.warning(f"Usuário cliente '{cliente_login_nome}' logado, mas não encontrado na lista de clientes.")
-
+                  print(f"Client login detected. Associated client: {cliente_login_nome}")
 
              # --- CRITICAL: Load data into local cache AFTER successful login ---
              try:
-                  st.session_state.db_manager.load_data_for_session(
+                  # Use the manager instance already in session state if available
+                  manager_instance = st.session_state.get('db_manager')
+                  if not manager_instance:
+                       # This shouldn't happen if initialized correctly in streamlit_app.py
+                       st.error("Critical Error: DB Manager not found in session state during login.")
+                       self._clear_session()
+                       return False, "Internal server error during login."
+
+                  manager_instance.load_data_for_session(
                        st.session_state['username'], st.session_state['role']
                   )
-                  st.session_state['data_loaded'] = True
-                  print("Carga de dados da sessão concluída.")
+                  # load_data_for_session sets data_loaded and last_load_time internally
+                  print("Session data load completed.")
              except Exception as load_e:
-                  st.error("Falha ao carregar dados após o login. Tente novamente.")
+                  st.error("Failed to load data after login. Please try again.")
                   st.exception(load_e)
-                  # Log out if data load fails? Important to prevent inconsistent state.
-                  self._clear_session() # Clear session vars set above
-                  st.session_state['logged_in'] = False
-                  return False, "Erro no carregamento de dados."
+                  self._clear_session() # Log out if data load fails
+                  return False, "Data loading error."
 
-             return True, "Login e carregamento de dados bem-sucedidos." # Return simple success message now
+             return True, "Login and data loading successful."
         else:
             return False, user_info_or_error # Return error message
 
-    def _clear_session(self):
-        # Helper to clear session state related to login
-        keys_to_clear = ['logged_in', 'username', 'role', 'nome_completo', 'cliente_nome', 'data_loaded', 'last_load_time', 'unsaved_changes']
-        for key in keys_to_clear:
-            if key in st.session_state: del st.session_state[key]
-        st.rerun() # Re-initialize with defaults
 
+    def _clear_session(self):
+        # ... (keep existing) ...
+        keys_to_clear = ['logged_in', 'username', 'role', 'nome_completo', 'cliente_nome', 'data_loaded', 'last_load_time', 'unsaved_changes', 'db_manager'] # Also clear db_manager? Maybe not if we want to reuse the connection object if possible. Let's keep it for now.
+        cleared_keys = []
+        for key in keys_to_clear:
+            if key in st.session_state:
+                del st.session_state[key]
+                cleared_keys.append(key)
+        print(f"Cleared session keys: {cleared_keys}")
+        # st.rerun() # Rerun is handled by logout caller usually
 
     def logout(self):
+        # ... (keep existing) ...
         self._clear_session()
-        # Close SQLite connection explicitly? Manager's __del__ should handle it.
-        print("Usuário deslogado.")
-        st.rerun()
-        
+        print("User logged out.")
+        st.cache_resource.clear() # Clear resource caches like gspread client
+        st.cache_data.clear()     # Clear data caches
+        st.rerun() # Force rerun to go back to login state
+
     def _check_login_on_sheets(self, username, password):
-         # Helper to just check credentials against sheets (separated logic)
-         print(f"Verificando credenciais de {username} diretamente na planilha 'usuarios'...")
-         users_ws = self.gerenciador_bd._get_worksheet(config.SHEET_USERS)
-         if not users_ws: return False, "Erro: Planilha de usuários não acessível."
-         try:
+        # ... (keep existing) ...
+        print(f"Verifying credentials for {username} directly in '{config.SHEET_USERS}' sheet...")
+        users_ws = self.gerenciador_bd._get_worksheet(config.SHEET_USERS)
+        if not users_ws: return False, "Error: User worksheet not accessible."
+        try:
+              # Use get_all_records for easier dict access
               user_data_list = users_ws.get_all_records()
-              user_data = next((record for record in user_data_list if str(record.get('username')) == str(username)), None)
+              # Case-insensitive search for username? Safer.
+              user_data = next((record for record in user_data_list
+                                if str(record.get('username','')).lower() == str(username).lower()), None)
 
               if user_data and isinstance(user_data, dict):
                    stored_hash = user_data.get('hashed_password')
+                   # Handle potentially empty passwords/hashes carefully
                    if stored_hash and self._verificar_senha(stored_hash, password):
-                        return True, dict(user_data) # Return the user data dict on success
-                   else: return False, "Senha incorreta."
-              else: return False, "Usuário não encontrado."
-         except Exception as e:
-              st.error(f"Erro ao verificar usuário na planilha: {e}")
-              return False, "Erro ao tentar login."
+                        # Return a clean dict, converting numeric-like strings if necessary? No, keep as is from sheet.
+                        return True, dict(user_data)
+                   else:
+                        return False, "Incorrect password."
+              else:
+                    return False, "User not found."
+        except Exception as e:
+              st.error(f"Error verifying user in the sheet: {e}")
+              return False, "Error during login attempt."
+
 
     def add_default_admin_if_needed(self):
-         """ Checks SHEETS if admin exists, adds if not """
-         users_ws = self.gerenciador_bd._get_worksheet(config.SHEET_USERS)
-         if not users_ws: return
+        """ Checks SHEETS if admin exists, adds if not """
+        # ... (keep existing implementation) ...
+        users_ws = self.gerenciador_bd._get_worksheet(config.SHEET_USERS)
+        if not users_ws:
+            print("Warning: Cannot check/add default admin, user sheet not found.")
+            return
 
-         try:
-              data = users_ws.get_all_records()
-              if not data: # Sheet is empty or just header
-                    print(f"Nenhum usuário encontrado. Adicionando admin padrão '{config.DEFAULT_ADMIN_USER}'...")
-                    hashed_pw = self._hash_password(config.DEFAULT_ADMIN_PASS)
-                    admin_data = [
-                         config.DEFAULT_ADMIN_USER,
-                         hashed_pw,
-                         "Administrador Padrão",
-                         "Admin",
-                         None # last_sync_timestamp
-                    ]
-                    # Ensure admin_data list matches columns in config.USERS_COLS order
-                    users_ws.append_row(admin_data[:len(config.USERS_COLS)], value_input_option='USER_ENTERED')
-                    print("Admin padrão adicionado.")
-              else:
-                   # Check if default admin exists
-                   found = False
-                   for record in data:
-                        if record.get('username') == config.DEFAULT_ADMIN_USER:
-                             found = True; break
-                   if not found:
-                       print(f"Admin '{config.DEFAULT_ADMIN_USER}' não encontrado. Adicionando...")
-                       hashed_pw = self._hash_password(config.DEFAULT_ADMIN_PASS)
-                       admin_data = [
-                           config.DEFAULT_ADMIN_USER, hashed_pw, "Administrador Padrão", "Admin", None
-                       ]
-                       users_ws.append_row(admin_data[:len(config.USERS_COLS)], value_input_option='USER_ENTERED')
-                       print("Admin padrão adicionado.")
+        try:
+            data = users_ws.get_all_records() # Simpler to check records
+            admin_exists = any(record.get('username') == config.DEFAULT_ADMIN_USER for record in data)
 
-         except Exception as e:
-              print(f"Erro ao verificar/adicionar admin padrão: {e}")
+            if not admin_exists:
+                print(f"Admin '{config.DEFAULT_ADMIN_USER}' not found. Adding...")
+                hashed_pw = self._hash_password(config.DEFAULT_ADMIN_PASS)
+                admin_data = [
+                    config.DEFAULT_ADMIN_USER,
+                    hashed_pw,
+                    "Administrador Padrão",
+                    "Admin",
+                    None # last_sync_timestamp
+                ]
+                # Ensure list length matches number of columns expected by USERS_COLS
+                users_ws.append_row(admin_data[:len(config.USERS_COLS)], value_input_option='USER_ENTERED')
+                print("Default admin added to the sheet.")
+            else:
+                 print(f"Default admin '{config.DEFAULT_ADMIN_USER}' already exists.")
+
+        except Exception as e:
+             print(f"Error checking/adding default admin: {e}")
