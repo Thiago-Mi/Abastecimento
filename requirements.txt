@@ -1,4 +1,8 @@
-pandas 
+streamlit
+pandas
 plotly
-datetime
+gspread
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
 openpyxl
