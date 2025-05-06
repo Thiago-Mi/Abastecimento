@@ -24,170 +24,302 @@ username = st.session_state.get('username')
 nome_completo = st.session_state.get('nome_completo')
 
 # --- Page Title ---
-st.markdown("#### ✅ Registrar Novo Abastecimento")
-st.write(f"Registrando como: **{nome_completo}**")
-st.divider()
+tab1, tab2 = st.tabs([ # Added Tab 5 implicitly by creating the page
+    "Registrar Novo Abastecimento", # Renamed Tab 1
+    "Visualizar Abastecimento" # Explicitly referencing the new page
+])
 
-# --- Get Client Options from Local Cache (FILTERED) ---
-# ... (keep existing client fetching) ...
-assigned_client_names = manager.get_assigned_clients_local(username)
-if not assigned_client_names:
-    st.warning("⚠️ Você não está atribuído a nenhum cliente.")
-    client_options_display = ["Selecione..."]
-else:
-     client_options_display = ["Selecione..."] + sorted(assigned_client_names)
+with tab1:
+    st.markdown("#### ✅ Registrar Novo Abastecimento")
+    st.write(f"Registrando como: **{nome_completo}**")
+    st.divider()
 
-# --- Data Entry Form ---
-with st.form("abastecimento_form", clear_on_submit=True):
-    st.subheader("Detalhes do Registro")
+    # --- Get Client Options from Local Cache (FILTERED) ---
+    # ... (keep existing client fetching) ...
+    assigned_client_names = manager.get_assigned_clients_local(username)
+    if not assigned_client_names:
+        st.warning("⚠️ Você não está atribuído a nenhum cliente.")
+        client_options_display = ["Selecione..."]
+    else:
+        client_options_display = ["Selecione..."] + sorted(assigned_client_names)
 
-    col1, col2 = st.columns(2)
-    with col1:
-        data_reg = st.date_input("Data do Registro", value=datetime.now().date(), key="form_data_reg")
-        cliente_selecionado = st.selectbox(
-            "Cliente Atribuído",
-            options=client_options_display,
-            key="form_cliente",
-            disabled=(not assigned_client_names)
+    # --- Data Entry Form ---
+    with st.form("abastecimento_form", clear_on_submit=True):
+        st.subheader("Detalhes do Registro")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            data_reg = st.date_input("Data do Registro", value=datetime.now().date(), key="form_data_reg")
+            cliente_selecionado = st.selectbox(
+                "Cliente Atribuído",
+                options=client_options_display,
+                key="form_cliente",
+                disabled=(not assigned_client_names)
+            )
+            dimensao = st.selectbox(
+                "Dimensão / Critério",
+                # Use keys from CRITERIA_COLORS for consistency
+                options=["Selecione..."] + list(config.CRITERIA_COLORS.keys()),
+                key="form_dimensao"
+            )
+        with col2:
+            quantidade = st.number_input("Quantidade (Links/Documentos)", min_value=1, value=1, step=1, key="form_qtd")
+            # --- UPDATED: Use config.VALID_STATUSES, default to 'Novo' or 'Enviado' ---
+            status_inicial = st.selectbox(
+                "Status Inicial",
+                options=[s for s in config.VALID_STATUSES if s not in ['Validado', 'Inválido']], # User shouldn't set these initially
+                index=0, # Default to the first option ('Novo')
+                key="form_status"
+            )
+
+        links_docs = st.text_area(
+            "Links Abastecidos ou Nome dos Documentos (UM POR LINHA)", # Updated instruction
+            height=150,
+            key="form_links",
+            help="Insira um link ou nome de documento por linha. Cada linha será um registro separado."
         )
-        dimensao = st.selectbox(
-             "Dimensão / Critério",
-             # Use keys from CRITERIA_COLORS for consistency
-             options=["Selecione..."] + list(config.CRITERIA_COLORS.keys()),
-             key="form_dimensao"
-        )
-    with col2:
-        quantidade = st.number_input("Quantidade (Links/Documentos)", min_value=1, value=1, step=1, key="form_qtd")
-        # --- UPDATED: Use config.VALID_STATUSES, default to 'Novo' or 'Enviado' ---
-        status_inicial = st.selectbox(
-             "Status Inicial",
-             options=[s for s in config.VALID_STATUSES if s not in ['Validado', 'Inválido']], # User shouldn't set these initially
-             index=0, # Default to the first option ('Novo')
-             key="form_status"
+
+        # --- Submit Button ---
+        submitted = st.form_submit_button("💾 Adicionar Registro(s) Localmente")
+
+        if submitted:
+            # --- Validation ---
+            errors = []
+            if not assigned_client_names: errors.append("Nenhum cliente atribuído para registrar.")
+            if cliente_selecionado == "Selecione...": errors.append("Selecione um cliente.")
+            if dimensao == "Selecione...": errors.append("Selecione a dimensão/critério.")
+            if not links_docs.strip(): errors.append("Insira pelo menos um link ou nome de documento.")
+
+            if errors:
+                for error in errors: st.error(error)
+            else:
+                # Process entries (one per line)
+                items = [item.strip() for item in links_docs.strip().split('\n') if item.strip()]
+                num_added = 0
+                num_failed = 0
+
+                for item_desc in items:
+                    # Ensure all columns from config.DOCS_COLS are present
+                    doc_data = {
+                        "id": None, # Generated by add_documento_local
+                        "colaborador_username": username,
+                        "cliente_nome": cliente_selecionado,
+                        "data_registro": data_reg.isoformat() if data_reg else None,
+                        "dimensao_criterio": dimensao,
+                        "link_ou_documento": item_desc,
+                        "quantidade": 1, # One per line item
+                        "status": status_inicial,
+                        "data_envio_original": None,
+                        # NEW Validation columns default to None/Null
+                        "data_validacao": None,             
+                        "validado_por": None,               
+                        "observacoes_validacao": None,      
+                    }
+                    # Ensure any other columns in DOCS_COLS are added here with None or default
+
+                    add_success = manager.add_documento_local(doc_data)
+                    if add_success:
+                        num_added += 1
+                    else:
+                        num_failed += 1
+
+                if num_added > 0:
+                    st.success(f"{num_added} registro(s) adicionado(s) com sucesso à sua sessão local.")
+                    st.info("Use a opção 'Salvar Selecionados' abaixo ou na barra lateral para enviar os dados.")
+                if num_failed > 0:
+                    st.warning(f"{num_failed} registro(s) falharam ao ser adicionados localmente.")
+                # Form clears automatically
+
+    # --- Display Recent Local Entries for this User ---
+    # ... (Keep existing logic for displaying unsynced docs and saving selected) ...
+    st.divider()
+    st.subheader("Registros Locais Pendentes de Envio")
+
+    unsynced_docs = manager.get_unsynced_documents_local(username)
+
+    if 'editor_key_counter' not in st.session_state: st.session_state.editor_key_counter = 0
+    editor_key = f"data_editor_{st.session_state.editor_key_counter}"
+
+    if unsynced_docs:
+        df_unsynced = pd.DataFrame([dict(row) for row in unsynced_docs])
+        cols_to_show = ['data_registro', 'cliente_nome', 'dimensao_criterio', 'link_ou_documento', 'status', 'id']
+        df_display = df_unsynced[[col for col in cols_to_show if col in df_unsynced.columns]].copy()
+        df_display.insert(0, "Selecionar", False)
+
+        column_config_unsync = {
+            "Selecionar": st.column_config.CheckboxColumn("Selecionar", required=True),
+            "id": st.column_config.TextColumn("ID", disabled=True),
+            "data_registro": st.column_config.DateColumn("Data Reg.", format="DD/MM/YYYY", disabled=True),
+            "cliente_nome": st.column_config.TextColumn("Cliente", disabled=True),
+            "dimensao_criterio": st.column_config.TextColumn("Critério", disabled=True),
+            "link_ou_documento": st.column_config.TextColumn("Link/Doc", width="large", disabled=True),
+            "status": st.column_config.TextColumn("Status", disabled=True),
+        }
+        final_column_config_unsync = {k:v for k,v in column_config_unsync.items() if k in df_display.columns}
+
+        st.info("Marque os registros que deseja enviar para a planilha e clique em 'Salvar Selecionados'.")
+        edited_df_unsync = st.data_editor(
+            df_display,
+            column_config=final_column_config_unsync,
+            key=editor_key,
+            hide_index=True,
+            use_container_width=True,
+            num_rows="dynamic"
         )
 
-    links_docs = st.text_area(
-        "Links Abastecidos ou Nome dos Documentos (UM POR LINHA)", # Updated instruction
-        height=150,
-        key="form_links",
-        help="Insira um link ou nome de documento por linha. Cada linha será um registro separado."
+        selected_rows_unsync = edited_df_unsync[edited_df_unsync["Selecionar"] == True]
+        selected_ids_unsync = selected_rows_unsync["id"].tolist() if not selected_rows_unsync.empty else []
+
+        st.markdown(f"**{len(selected_ids_unsync)}** registro(s) selecionado(s).")
+
+        st.divider()
+        if st.button("💾 Salvar Selecionados na Planilha", disabled=(not selected_ids_unsync)):
+            if selected_ids_unsync:
+                with st.spinner("Enviando dados selecionados para a planilha..."):
+                    # Use the APPEND method for selected items
+                    save_success = manager.save_selected_docs_to_sheets(username, selected_ids_unsync)
+                if save_success:
+                    st.success(f"{len(selected_ids_unsync)} registros selecionados foram enviados com sucesso!")
+                    st.toast("Dados sincronizados!")
+                    st.session_state.editor_key_counter += 1
+                    st.rerun()
+                else:
+                    st.error("Falha ao salvar os registros selecionados na planilha.")
+                    st.toast("Erro ao sincronizar.")
+            else:
+                st.warning("Nenhum registro foi selecionado para salvar.")
+
+    elif st.session_state.get('unsaved_changes'):
+        st.warning("Você possui alterações locais, mas não foi possível exibi-las. Tente recarregar.")
+    else:
+        st.info("Nenhum registro local pendente de envio.")
+
+    # --- Final check for unsaved changes ---
+    final_check_unsaved = manager.get_unsynced_documents_local(username)
+    st.session_state['unsaved_changes'] = bool(final_check_unsaved)
+    
+    
+with tab2:
+    # --- Page Title ---
+    st.markdown(f"#### 📋 Meus Registros - {nome_completo}")
+    st.write("Acompanhe aqui o status dos seus envios.")
+    st.divider()
+
+    # --- Fetch All Documents for the Logged-in User ---
+    # get_documentos_usuario_local with synced_status=None fetches all (synced and unsynced)
+    user_documents_raw = manager.get_documentos_usuario_local(username=username, synced_status=None)
+
+    if not user_documents_raw:
+        st.info("Você ainda não possui nenhum registro.")
+        st.stop()
+
+    df_user_docs = pd.DataFrame([dict(row) for row in user_documents_raw])
+
+    # --- Add Filters (Optional, but good for usability) ---
+    st.sidebar.header("Filtros Meus Registros")
+    # Filter by Client (clients assigned to this user)
+    assigned_clients = manager.get_assigned_clients_local(username)
+    client_options = ["Todos"] + sorted(assigned_clients) if assigned_clients else ["Todos"]
+    selected_client_filter = st.sidebar.selectbox(
+        "Filtrar por Cliente:",
+        options=client_options,
+        key="my_records_client_filter"
     )
 
-    # --- Submit Button ---
-    submitted = st.form_submit_button("💾 Adicionar Registro(s) Localmente")
+    # Filter by Status
+    status_options = ["Todos"] + config.VALID_STATUSES
+    selected_status_filter = st.sidebar.selectbox(
+        "Filtrar por Status:",
+        options=status_options,
+        key="my_records_status_filter"
+    )
 
-    if submitted:
-        # --- Validation ---
-        errors = []
-        if not assigned_client_names: errors.append("Nenhum cliente atribuído para registrar.")
-        if cliente_selecionado == "Selecione...": errors.append("Selecione um cliente.")
-        if dimensao == "Selecione...": errors.append("Selecione a dimensão/critério.")
-        if not links_docs.strip(): errors.append("Insira pelo menos um link ou nome de documento.")
+    # Apply filters
+    df_filtered = df_user_docs.copy()
+    if selected_client_filter != "Todos":
+        df_filtered = df_filtered[df_filtered['cliente_nome'] == selected_client_filter]
+    if selected_status_filter != "Todos":
+        df_filtered = df_filtered[df_filtered['status'] == selected_status_filter]
 
-        if errors:
-             for error in errors: st.error(error)
-        else:
-            # Process entries (one per line)
-            items = [item.strip() for item in links_docs.strip().split('\n') if item.strip()]
-            num_added = 0
-            num_failed = 0
 
-            for item_desc in items:
-                # Ensure all columns from config.DOCS_COLS are present
-                doc_data = {
-                    "id": None, # Generated by add_documento_local
-                    "colaborador_username": username,
-                    "cliente_nome": cliente_selecionado,
-                    "data_registro": data_reg.isoformat() if data_reg else None,
-                    "dimensao_criterio": dimensao,
-                    "link_ou_documento": item_desc,
-                    "quantidade": 1, # One per line item
-                    "status": status_inicial,
-                    "data_envio_original": None,
-                    # NEW Validation columns default to None/Null
-                    "data_validacao": None,             
-                    "validado_por": None,               
-                    "observacoes_validacao": None,      
-                }
-                # Ensure any other columns in DOCS_COLS are added here with None or default
+    # --- Display User Documents ---
+    if df_filtered.empty:
+        st.info("Nenhum registro encontrado com os filtros selecionados.")
+    else:
+        st.info(f"Exibindo {len(df_filtered)} de {len(df_user_docs)} registros.")
 
-                add_success = manager.add_documento_local(doc_data)
-                if add_success:
-                     num_added += 1
-                else:
-                     num_failed += 1
+        # --- Format Dates and Select Columns for Display ---
+        def format_display_date(date_str, fmt="%d/%m/%Y"):
+            if not date_str or pd.isna(date_str) or date_str.lower() == 'none': return "N/A"
+            try: return pd.to_datetime(date_str).strftime(fmt)
+            except: return str(date_str)
 
-            if num_added > 0:
-                st.success(f"{num_added} registro(s) adicionado(s) com sucesso à sua sessão local.")
-                st.info("Use a opção 'Salvar Selecionados' abaixo ou na barra lateral para enviar os dados.")
-            if num_failed > 0:
-                st.warning(f"{num_failed} registro(s) falharam ao ser adicionados localmente.")
-            # Form clears automatically
+        def format_display_datetime(dt_str, fmt="%d/%m/%Y %H:%M"):
+            if not dt_str or pd.isna(dt_str) or dt_str.lower() == 'none': return "N/A"
+            try: return pd.to_datetime(dt_str).strftime(fmt)
+            except: return str(dt_str)
 
-# --- Display Recent Local Entries for this User ---
-# ... (Keep existing logic for displaying unsynced docs and saving selected) ...
-st.divider()
-st.subheader("Registros Locais Pendentes de Envio")
+        df_display = df_filtered.copy()
 
-unsynced_docs = manager.get_unsynced_documents_local(username)
+        # Apply formatting
+        if 'data_registro' in df_display.columns:
+            df_display['Data Registro'] = df_display['data_registro'].apply(format_display_date)
+        if 'data_validacao' in df_display.columns:
+            df_display['Data Validação'] = df_display['data_validacao'].apply(format_display_datetime)
 
-if 'editor_key_counter' not in st.session_state: st.session_state.editor_key_counter = 0
-editor_key = f"data_editor_{st.session_state.editor_key_counter}"
+        # Rename columns for better display
+        column_rename_map = {
+            'cliente_nome': 'Cliente',
+            'dimensao_criterio': 'Critério',
+            'link_ou_documento': 'Link/Documento',
+            'quantidade': 'Qtd.',
+            'status': 'Status',
+            'validado_por': 'Validado Por',
+            'observacoes_validacao': 'Observações Admin',
+            'is_synced': 'Sincronizado' # 0 = local/modificado, 1 = gsheet/processado
+        }
+        # Only rename columns that exist
+        df_display.rename(columns={k: v for k, v in column_rename_map.items() if k in df_display.columns}, inplace=True)
 
-if unsynced_docs:
-     df_unsynced = pd.DataFrame([dict(row) for row in unsynced_docs])
-     cols_to_show = ['data_registro', 'cliente_nome', 'dimensao_criterio', 'link_ou_documento', 'status', 'id']
-     df_display = df_unsynced[[col for col in cols_to_show if col in df_unsynced.columns]].copy()
-     df_display.insert(0, "Selecionar", False)
 
-     column_config_unsync = {
-         "Selecionar": st.column_config.CheckboxColumn("Selecionar", required=True),
-         "id": st.column_config.TextColumn("ID", disabled=True),
-         "data_registro": st.column_config.DateColumn("Data Reg.", format="DD/MM/YYYY", disabled=True),
-         "cliente_nome": st.column_config.TextColumn("Cliente", disabled=True),
-         "dimensao_criterio": st.column_config.TextColumn("Critério", disabled=True),
-         "link_ou_documento": st.column_config.TextColumn("Link/Doc", width="large", disabled=True),
-         "status": st.column_config.TextColumn("Status", disabled=True),
-     }
-     final_column_config_unsync = {k:v for k,v in column_config_unsync.items() if k in df_display.columns}
+        # Select and order columns for the final display
+        display_columns_ordered = [
+            'Data Registro', 'Cliente', 'Critério', 'Link/Documento',
+            'Qtd.', 'Status', 'Data Validação', 'Validado Por',
+            'Observações Admin', 'Sincronizado', 'id' # Keep id for reference if needed
+        ]
+        # Filter to only columns that actually exist in df_display after transformations
+        final_display_cols = [col for col in display_columns_ordered if col in df_display.columns]
 
-     st.info("Marque os registros que deseja enviar para a planilha e clique em 'Salvar Selecionados'.")
-     edited_df_unsync = st.data_editor(
-         df_display,
-         column_config=final_column_config_unsync,
-         key=editor_key,
-         hide_index=True,
-         use_container_width=True,
-         num_rows="dynamic"
-     )
 
-     selected_rows_unsync = edited_df_unsync[edited_df_unsync["Selecionar"] == True]
-     selected_ids_unsync = selected_rows_unsync["id"].tolist() if not selected_rows_unsync.empty else []
+        # --- Configure st.data_editor for read-only display with clickable links ---
+        column_config_display = {
+            "Link/Documento": st.column_config.LinkColumn(
+                "Link/Documento",
+                help="Clique para abrir o link (se aplicável).",
+                display_text="Abrir/Ver" # Or use a regex to show part of the URL
+            ),
+            "id": st.column_config.TextColumn("ID (Ref.)", width="small"),
+            # Disable editing for all other columns
+        }
+        for col_name in final_display_cols:
+            if col_name not in column_config_display: # Don't override LinkColumn or ID
+                column_config_display[col_name] = st.column_config.TextColumn(col_name, disabled=True)
 
-     st.markdown(f"**{len(selected_ids_unsync)}** registro(s) selecionado(s).")
 
-     st.divider()
-     if st.button("💾 Salvar Selecionados na Planilha", disabled=(not selected_ids_unsync)):
-         if selected_ids_unsync:
-             with st.spinner("Enviando dados selecionados para a planilha..."):
-                 # Use the APPEND method for selected items
-                 save_success = manager.save_selected_docs_to_sheets(username, selected_ids_unsync)
-             if save_success:
-                 st.success(f"{len(selected_ids_unsync)} registros selecionados foram enviados com sucesso!")
-                 st.toast("Dados sincronizados!")
-                 st.session_state.editor_key_counter += 1
-                 st.rerun()
-             else:
-                 st.error("Falha ao salvar os registros selecionados na planilha.")
-                 st.toast("Erro ao sincronizar.")
-         else:
-             st.warning("Nenhum registro foi selecionado para salvar.")
+        st.dataframe(
+            df_display[final_display_cols],
+            column_config=column_config_display,
+            hide_index=True,
+            use_container_width=True
+        )
 
-elif st.session_state.get('unsaved_changes'):
-      st.warning("Você possui alterações locais, mas não foi possível exibi-las. Tente recarregar.")
-else:
-      st.info("Nenhum registro local pendente de envio.")
+        # --- Summary Statistics ---
+        st.divider()
+        st.subheader("Resumo dos Seus Registros (com filtros aplicados):")
+        status_counts = df_filtered['status'].value_counts().reindex(config.VALID_STATUSES, fill_value=0)
 
-# --- Final check for unsaved changes ---
-final_check_unsaved = manager.get_unsynced_documents_local(username)
-st.session_state['unsaved_changes'] = bool(final_check_unsaved)
+        cols_stats = st.columns(len(config.VALID_STATUSES))
+        for i, status_name in enumerate(config.VALID_STATUSES):
+            count = status_counts.get(status_name, 0)
+            cols_stats[i].metric(label=status_name, value=count)
