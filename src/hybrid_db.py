@@ -302,7 +302,6 @@ class HybridDBManager:
 
     def get_kpi_data_local(self, colaborador_username=None, cliente_nome=None, periodo_dias=None):
          """Calculates KPIs based on the local 'documentos' table, with more filters."""
-         # ... (keep existing implementation, make sure status names match config.VALID_STATUSES) ...
          base_query = "SELECT status, COUNT(*) as count FROM documentos WHERE 1=1"
          params = []
 
@@ -312,33 +311,40 @@ class HybridDBManager:
          if cliente_nome:
               base_query += " AND cliente_nome = ? COLLATE NOCASE"
               params.append(cliente_nome)
-         # ... (period filter remains the same) ...
+         
          if periodo_dias:
              try:
-                cutoff_date = datetime.now() - pd.Timedelta(days=periodo_dias)
+                # Ensure pd is imported if you use pd.Timedelta directly here
+                # For now, assuming datetime operations are sufficient
+                cutoff_date = datetime.now() - pd.Timedelta(days=periodo_dias) 
                 cutoff_iso = cutoff_date.isoformat()
                 base_query += " AND data_registro >= ?"
                 params.append(cutoff_iso)
              except Exception as e:
                 print(f"Warning: Could not apply date filter (days={periodo_dias}): {e}")
 
-
          query = f"{base_query} GROUP BY status"
          results = self._execute_local_sql(query, tuple(params) if params else None)
 
-         # Rename KPI keys to match client layout image (adjust if needed)
-         kpi = {'docs_enviados': 0, 'docs_publicados': 0, 'docs_pendentes': 0, 'docs_invalidos': 0}
+         kpi = {'docs_enviados': 0, 'docs_validados': 0, 'docs_invalidos': 0}
+         
          if results:
              status_map = {
-                  'Enviado': 'docs_enviados',
-                  'Validado': 'docs_publicados', # Maps to 'Publicados' KPI
-                  'Pendente': 'docs_pendentes',
-                  'Novo': 'docs_pendentes', # Include 'Novo' in 'Pendente'? Or have a separate KPI?
-                  'Inválido': 'docs_invalidos'
+                  'Cadastrado': 'docs_enviados',  # Maps to 'Cadastrado' status
+                  'Validado': 'docs_validados',    # Maps to 'Validado' status
+                  'Inválido': 'docs_invalidos'    # Maps to 'Inválido' status
+                  # Add other statuses here if they contribute to these KPIs
              }
              for row in results:
-                  status_key = status_map.get(row['status'])
-                  if status_key: kpi[status_key] += row['count']
+                  status_from_db = row['status']
+                  count = row['count']
+                  
+                  # Check if the status from DB is in our defined map
+                  if status_from_db in status_map:
+                       kpi_key = status_map[status_from_db]
+                       kpi[kpi_key] += count
+                  # else:
+                  #    print(f"Status '{status_from_db}' from DB not mapped to a KPI. Count: {count}")
 
          return kpi
 
@@ -563,7 +569,7 @@ class HybridDBManager:
                  username = user_info['username']
                  nome_completo = user_info['nome_completo']
                  links_validados = validated_counts.get(username, 0)
-                 pontuacao = links_validados * 10
+                 pontuacao = links_validados
                  percentual = (links_validados / total_validated_overall * 100) if total_validated_overall > 0 else 0.0
 
                  result_data.append({
@@ -945,39 +951,46 @@ class HybridDBManager:
             
     def get_analise_cliente_data_local(self, cliente_nome, colaborador_username=None):
          """ Fetches data needed for the 'Análise por Cliente' donut charts. """
-         analise = {'docs_no_drive': config.DOCS_NO_DRIVE_TARGET, 'docs_publicados': 0, 'docs_pendentes': 0, 'criterios_counts': {}}
+         # Initialize counts
+         total_documentos_cliente = 0
+         documentos_validados = 0
+         documentos_nao_validados = 0 # Renamed from docs_invalidos for clarity
+         criterios_counts = {crit: 0 for crit in config.CRITERIA_COLORS.keys()}
 
-         base_query = "SELECT status, dimensao_criterio, COUNT(id) as count FROM documentos WHERE cliente_nome = ? COLLATE NOCASE"
-         params = [cliente_nome]
+         # Base query to get all documents for the client
+         base_query_all_docs = "SELECT status, dimensao_criterio FROM documentos WHERE cliente_nome = ? COLLATE NOCASE"
+         params_all_docs = [cliente_nome]
 
-         if colaborador_username: # Filter further if it's a Usuario view
-             base_query += " AND colaborador_username = ? COLLATE NOCASE"
-             params.append(colaborador_username)
+         if colaborador_username:
+             base_query_all_docs += " AND colaborador_username = ? COLLATE NOCASE"
+             params_all_docs.append(colaborador_username)
 
-         query = f"{base_query} GROUP BY status, dimensao_criterio"
-         results = self._execute_local_sql(query, tuple(params))
+         all_client_docs_results = self._execute_local_sql(base_query_all_docs, tuple(params_all_docs))
 
-         if not results:
-             analise['docs_pendentes'] = analise['docs_no_drive'] # If no docs found, all are pending
-             return analise
+         if all_client_docs_results:
+             total_documentos_cliente = len(all_client_docs_results)
+             for row in all_client_docs_results:
+                 status = row['status']
+                 dimensao = row['dimensao_criterio']
 
-         crit_counts = {}
-         total_published = 0
+                 if status == 'Validado':
+                     documentos_validados += 1
+                     if dimensao in criterios_counts:
+                         criterios_counts[dimensao] += 1
+                 # Any status other than 'Validado' contributes to 'nao_validados'
+                 # This includes 'Cadastrado', 'Inválido', or any other status.
+                 # if status != 'Validado': # This would double count if we also count specific non-validated statuses
+                 #    documentos_nao_validados +=1
 
-         for row in results:
-             if row['status'] == 'Validado': # Assuming 'Validado' means 'Publicado'
-                 total_published += row['count']
+         # Calculate non-validated documents
+         documentos_nao_validados = total_documentos_cliente - documentos_validados
 
-             # Count documents per criteria type (ignoring status here, just count occurrences)
-             crit = row['dimensao_criterio']
-             if crit and crit in config.CRITERIA_COLORS: # Check if it's a defined criterion
-                crit_counts[crit] = crit_counts.get(crit, 0) + row['count']
-
-         analise['docs_publicados'] = total_published
-         # Calculate pending based on the target in config
-         analise['docs_pendentes'] = max(0, analise['docs_no_drive'] - total_published)
-         analise['criterios_counts'] = crit_counts
-
+         analise = {
+             'total_documentos_cliente': total_documentos_cliente,
+             'docs_validados': documentos_validados,
+             'docs_invalidos': documentos_nao_validados,
+             'criterios_counts': criterios_counts
+         }
          return analise
     
     def get_assigned_clients_local(self, colaborador_username):

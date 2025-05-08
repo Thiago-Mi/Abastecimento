@@ -128,8 +128,8 @@ with tab1:
     kpi_geral = manager.get_kpi_data_local() # Uses local cache
     col1, col2, col3, col4 = st.columns(4)
     # Adjust KPI names if needed based on how you map statuses
-    col1.metric("Docs Enviados/Novos", f"{kpi_geral.get('docs_enviados', 0) + kpi_geral.get('docs_pendentes', 0):02d}") # Example: Combine Enviado+Pendente
-    col2.metric("Docs Validados", f"{kpi_geral.get('docs_publicados', 0):02d}")
+    col1.metric("Docs Cadastrados", f"{kpi_geral.get('docs_enviados', 0)}") # Example: Combine Enviado+Pendente
+    col2.metric("Docs Validados", f"{kpi_geral.get('docs_validados', 0):02d}")
     col3.metric("Docs Inválidos", f"{kpi_geral.get('docs_invalidos', 0):02d}")
     # col4.metric("Algum outro KPI?", ...)
     st.divider()
@@ -352,7 +352,7 @@ with tab5:
     # Filter by Status
     status_options = ["Todos"] + config.VALID_STATUSES
     # Default to showing statuses that typically need validation
-    default_statuses_to_show = ['Novo', 'Enviado', 'Pendente']
+    default_statuses_to_show = ['Cadastrado', 'Inválido']
     selected_status_filter = st.sidebar.multiselect(
         "Filtrar por Status:",
         options=status_options,
@@ -428,7 +428,7 @@ with tab5:
             ),
             "link_ou_documento": st.column_config.LinkColumn( # Make link clickable
                 "Link/Documento",
-                help="Clique para abrir o link (se aplicável).",
+                help="Clique para abrir o link",
                 width="large",
                 display_text="Abrir/Ver" # Customize text? Or show URL? Show URL is better.
             ),

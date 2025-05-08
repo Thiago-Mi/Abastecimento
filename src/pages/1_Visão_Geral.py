@@ -36,8 +36,6 @@ if role == 'Cliente':
          st.error("Nome do cliente associado não encontrado.")
          st.stop()
 
-    st.info(f"Exibindo dados para o cliente: **{cliente_nome_logado}**")
-
     # --- Sidebar Filter (already in streamlit_app.py) ---
     selected_period_label = st.session_state.get('selected_period', "Todos")
     periodo_dias_map = {"Últimos 7 dias": 7, "Últimos 30 dias": 30, "Últimos 90 dias": 90}
@@ -49,71 +47,164 @@ if role == 'Cliente':
         periodo_dias=periodo_dias_filter
     )
     kp1, kp2, kp3 = st.columns(3)
-    kp1.metric("Docs Enviados", f"{kpi_cliente.get('docs_enviados', 0):02d}")
-    kp2.metric("Docs Publicados", f"{kpi_cliente.get('docs_publicados', 0):02d}")
-    kp3.metric("Docs Pendentes", f"{kpi_cliente.get('docs_pendentes', 0):02d}")
+    kp1.metric("Docs Cadastrados", f"{kpi_cliente.get('docs_enviados', 0):02d}")
+    kp2.metric("Docs Pendentes", f"{kpi_cliente.get('docs_invalidos', 0):02d}")
+    kp3.metric("Docs Validados", f"{kpi_cliente.get('docs_validados', 0):02d}")
     st.markdown("---") # Visual separator like the image
 
     # --- Gráfico de Linha Cliente ---
-    st.subheader("Desempenho Temporal (Docs Publicados)")
+    st.subheader("Desempenho Temporal")
     grupo_tempo = 'W' # Default Semanal, pode ser dinâmico se desejar
     df_line_cliente = manager.get_docs_por_periodo_cliente_local(cliente_nome_logado, grupo=grupo_tempo)
 
-    if not df_line_cliente.empty and 'periodo_dt' in df_line_cliente.columns:
-         fig_line_cli = px.line(df_line_cliente, x='periodo_dt', y='contagem', markers=True,
-                             labels={'periodo_dt': 'Período', 'contagem': 'Docs Publicados'})
-         fig_line_cli.update_layout(
-             yaxis_title="Quantidade Publicada",xaxis_title="",
-             height=300, margin=dict(l=10, r=10, t=10, b=10)
+    if not df_line_cliente.empty and 'periodo_dt' in df_line_cliente.columns and 'contagem' in df_line_cliente.columns and df_line_cliente['contagem'].sum() > 0:
+         # GRÁFICO DE DISPERSÃO TEMPORAL COM TAMANHO DOS PONTOS
+         fig_scatter_cli = px.scatter(df_line_cliente,
+                                      x='periodo_dt',
+                                      y='contagem',
+                                      size='contagem',  # Tamanho do ponto pela contagem
+                                      text='contagem',  # Mostrar contagem no ponto/hover
+                                      labels={'periodo_dt': 'Data', 'contagem': 'Docs Validados'},
+                                      size_max=15) # Ajuste o tamanho máximo do ponto conforme necessário
+
+         fig_scatter_cli.update_traces(
+             textposition='top center', # Posição do texto, se mostrado diretamente
+             marker=dict(line=dict(width=1, color='DarkSlateGrey')), # Contorno para os pontos
          )
-         # Add peak annotation if desired
-         if not df_line_cliente.empty:
-             try: # Handle potential errors if no data
-                  peak_idx = df_line_cliente['contagem'].idxmax()
-                  peak_row = df_line_cliente.loc[peak_idx]
-                  fig_line_cli.add_annotation(x=peak_row['periodo_dt'], y=peak_row['contagem'],
-                                           text=f"<b>{peak_row['contagem']}</b>", showarrow=True, arrowhead=1,
-                                           bordercolor="#636EFA", borderwidth=1, bgcolor="#636EFA", font=dict(color="white"),
-                                           yshift=10 # Adjust position slightly
-                                          )
-             except Exception as peak_err: print(f"Could not add peak annotation: {peak_err}")
+         fig_scatter_cli.update_layout(
+             yaxis_title="Quantidade Validada",
+             xaxis_title="Período (Início da Semana)",
+             height=350,
+             margin=dict(l=20, r=20, t=30, b=20),
+             xaxis_tickformat='%d/%m/%Y',
+             showlegend=False # Legenda não é necessária se o tamanho já indica a contagem
+         )
 
+         # Adicionar anotação para o valor máximo (pico)
+        #  try:
+        #       peak_idx = df_line_cliente['contagem'].idxmax()
+        #       peak_row = df_line_cliente.loc[peak_idx]
+        #       if peak_row['contagem'] > 0:
+        #           fig_scatter_cli.add_annotation(
+        #               x=peak_row['periodo_dt'],
+        #               y=peak_row['contagem'],
+        #               text=f"<b>Max: {peak_row['contagem']}</b>",
+        #               showarrow=True,
+        #               arrowhead=1,
+        #               ax=0,
+        #               ay=-40, # Ajuste conforme necessário para o scatter
+        #               bordercolor="#636EFA",
+        #               borderwidth=1,
+        #               bgcolor="rgba(99, 110, 250, 0.7)",
+        #               font=dict(color="white")
+        #           )
+        #  except Exception as peak_err:
+        #       print(f"Could not add peak annotation to scatter chart: {peak_err}")
 
-         st.plotly_chart(fig_line_cli, use_container_width=True)
+         st.plotly_chart(fig_scatter_cli, use_container_width=True)
     else:
          st.caption("Nenhum dado para exibir o gráfico de desempenho temporal.")
 
     st.markdown("---") # Visual separator
 
     # --- Critérios Atendidos Cliente ---
-    st.subheader("Critérios Atendidos")
-    crit_data_cliente = manager.get_criterios_atendidos_cliente_local(cliente_nome_logado)
+    # st.subheader("Critérios Atendidos")
+    # crit_data_cliente = manager.get_criterios_atendidos_cliente_local(cliente_nome_logado)
 
-    if not crit_data_cliente or all(v['total'] == 0 for v in crit_data_cliente.values()):
-         st.info("Nenhum dado de critério encontrado para este cliente.")
-    else:
-         max_total_crit = 1 # Avoid division by zero if no criteria have docs
-         totals = [data['total'] for data in crit_data_cliente.values() if data['total'] > 0]
-         if totals: max_total_crit = max(totals)
+    # if not crit_data_cliente or all(v['total'] == 0 for v in crit_data_cliente.values()):
+    #      st.info("Nenhum dado de critério encontrado para este cliente.")
+    # else:
+    #      max_total_crit = 1 # Avoid division by zero if no criteria have docs
+    #      totals = [data['total'] for data in crit_data_cliente.values() if data['total'] > 0]
+    #      if totals: max_total_crit = max(totals)
 
-         for criterio, data in crit_data_cliente.items():
-              total = data.get('total', 0)
-              atendidos = data.get('atendidos', 0)
-              # Percent relative to ITSELF, not overall total? Image implies percentage of total docs for that criterion.
-              percentual = (atendidos / total * 100) if total > 0 else 0
-              # Or percent relative to max total for scaling? Let's use percent of its own total.
+    #      for criterio, data in crit_data_cliente.items():
+    #           total = data.get('total', 0)
+    #           atendidos = data.get('atendidos', 0)
+    #           # Percent relative to ITSELF, not overall total? Image implies percentage of total docs for that criterion.
+    #           percentual = (atendidos / total * 100) if total > 0 else 0
+    #           # Or percent relative to max total for scaling? Let's use percent of its own total.
 
-              color = config.CRITERIA_COLORS.get(criterio, config.DEFAULT_CRITERIA_COLOR)
+    #           color = config.CRITERIA_COLORS.get(criterio, config.DEFAULT_CRITERIA_COLOR)
 
-              col_cor, col_nome, col_barra_texto = st.columns([0.05, 0.2, 0.75])
+    #           col_cor, col_nome, col_barra_texto = st.columns([0.05, 0.2, 0.75])
 
-              with col_cor:
-                   st.markdown(f'<div style="width: 20px; height: 20px; background-color: {color}; margin-top: 5px;"></div>', unsafe_allow_html=True)
-              with col_nome:
-                   st.write(f"**{criterio}**")
-              with col_barra_texto:
-                    st.progress(percentual / 100)
-                    st.caption(f"{atendidos} docs / {percentual:.0f}%")
+    #           with col_cor:
+    #                st.markdown(f'<div style="width: 20px; height: 20px; background-color: {color}; margin-top: 5px;"></div>', unsafe_allow_html=True)
+    #           with col_nome:
+    #                st.write(f"**{criterio}**")
+    #           with col_barra_texto:
+    #                 st.progress(percentual / 100)
+    #                 st.caption(f"{atendidos} docs / {percentual:.0f}%")
+
+    # --- Análise por Cliente ---
+    st.subheader("📊 Status Geral")
+    client_for_analysis = cliente_nome_logado
+
+    if client_for_analysis:
+
+        # Fetch analysis data using the new method
+        # Filter by collaborator if the current role is Usuario
+        collab_filter_for_analysis = username if role == 'Usuario' else None
+        analysis_data = manager.get_analise_cliente_data_local(client_for_analysis, collab_filter_for_analysis)
+
+        col_an1, col_an2 = st.columns(2)
+
+        with col_an1: # Left side - Published vs Pending Donut
+            docs_drive = analysis_data['total_documentos_cliente']
+            docs_pub = analysis_data['docs_validados']
+            docs_pend = analysis_data['docs_invalidos']
+            st.markdown(f"🟢 Documentos no Drive - **{docs_pub+docs_pend}**") # Indicate it's a target
+            st.markdown(f"🔵 Documentos Validados - **{docs_pub}**")
+            st.markdown(f"🔴 Documentos Pendentes - **{docs_pend}**")
+
+            labels_status = ['Validados', 'Pendentes']
+            values_status = [docs_pub, docs_pend]
+            colors_status = ['#1f77b4', '#d62728'] # Blue, Red approx.
+
+            if sum(values_status) > 0 or docs_drive > 0: # Show if target exists even if no docs yet
+                fig_donut_status = go.Figure(data=[go.Pie(labels=labels_status,
+                                                        values=values_status,
+                                                        hole=.4,
+                                                        marker_colors=colors_status,
+                                                        pull=[0.02, 0.02],
+                                                        sort=False # Keep order Pub, Pend
+                                                        )])
+                fig_donut_status.update_layout(showlegend=False, height=300, margin=dict(t=15, b=10, l=10, r=10))
+                st.plotly_chart(fig_donut_status, use_container_width=True)
+            else:
+                st.caption("Nenhum documento para análise de status.")
+
+
+        with col_an2: # Right side - Criteria Donut
+            st.markdown("**Documentos por Critério**")
+            crit_counts = analysis_data.get('criterios_counts', {})
+
+            labels_crit = []
+            values_crit = []
+            colors_crit = []
+
+            # Use defined criteria order and colors
+            for crit_name, color in config.CRITERIA_COLORS.items():
+                 count = crit_counts.get(crit_name, 0)
+                 st.markdown(f'<span style="color:{color}; font-size: 1.1em;">■</span> {crit_name} - **{count}**', unsafe_allow_html=True)
+                 if count > 0: # Only add to chart if count > 0
+                     labels_crit.append(crit_name)
+                     values_crit.append(count)
+                     colors_crit.append(color)
+
+
+            if sum(values_crit) > 0:
+                fig_donut_crit = go.Figure(data=[go.Pie(labels=labels_crit,
+                                                         values=values_crit,
+                                                         hole=.4,
+                                                         marker_colors=colors_crit,
+                                                         pull=[0.02] * len(labels_crit) # Espaço entre fatias
+                                                         )])
+                fig_donut_crit.update_layout(showlegend=False, height=300, margin=dict(t=15, b=10, l=10, r=10))
+                st.plotly_chart(fig_donut_crit, use_container_width=True)
+            else:
+                 st.caption("Nenhum documento classificado por critério.")
 
 
 # ------------------- VISTA ADMIN / USUARIO -------------------
@@ -158,9 +249,8 @@ elif role in ['Admin', 'Usuario']:
     kpi_geral = manager.get_kpi_data_local(colaborador_username=selected_colab_filter_user) # Filter by selected collab
     kp1, kp2, kp3, kp4 = st.columns(4)
     # Rename based on Layout 2 image
-    kp1.metric("Links Enviados", f"{kpi_geral.get('docs_enviados', 0):02d}") # Assumes docs_enviados maps here
-    kp2.metric("Links Validados", f"{kpi_geral.get('docs_publicados', 0):02d}") # Assumes docs_publicados maps here
-    kp3.metric("Links Pendentes", f"{kpi_geral.get('docs_pendentes', 0):02d}")
+    kp1.metric("Links Cadastrados", f"{kpi_geral.get('docs_enviados', 0):02d}") # Assumes docs_enviados maps here
+    kp2.metric("Links Validados", f"{kpi_geral.get('docs_validados', 0):02d}") # Assumes docs_validados maps here
     kp4.metric("Links Inválidos", f"{kpi_geral.get('docs_invalidos', 0):02d}")
     st.divider()
 
@@ -222,14 +312,14 @@ elif role in ['Admin', 'Usuario']:
 
         with col_an1: # Left side - Published vs Pending Donut
             st.markdown("**Status Geral**")
-            docs_drive = analysis_data['docs_no_drive']
-            docs_pub = analysis_data['docs_publicados']
-            docs_pend = analysis_data['docs_pendentes']
-            st.markdown(f"🟢 Documentos no Drive - **{docs_drive}** (Meta)") # Indicate it's a target
-            st.markdown(f"🔵 Documentos Publicados - **{docs_pub}**")
+            docs_drive = analysis_data['total_documentos_cliente']
+            docs_pub = analysis_data['docs_validados']
+            docs_pend = analysis_data['docs_invalidos']
+            st.markdown(f"🟢 Documentos no Drive - **{docs_pub+docs_pend}**") # Indicate it's a target
+            st.markdown(f"🔵 Documentos Validados - **{docs_pub}**")
             st.markdown(f"🔴 Documentos Pendentes - **{docs_pend}**")
 
-            labels_status = ['Publicados', 'Pendentes']
+            labels_status = ['Validados', 'Pendentes']
             values_status = [docs_pub, docs_pend]
             colors_status = ['#1f77b4', '#d62728'] # Blue, Red approx.
 
@@ -241,7 +331,7 @@ elif role in ['Admin', 'Usuario']:
                                                         pull=[0.02, 0.02],
                                                         sort=False # Keep order Pub, Pend
                                                         )])
-                fig_donut_status.update_layout(showlegend=False, height=300, margin=dict(t=10, b=10, l=10, r=10))
+                fig_donut_status.update_layout(showlegend=False, height=300, margin=dict(t=15, b=10, l=10, r=10))
                 st.plotly_chart(fig_donut_status, use_container_width=True)
             else:
                 st.caption("Nenhum documento para análise de status.")
@@ -272,7 +362,7 @@ elif role in ['Admin', 'Usuario']:
                                                          marker_colors=colors_crit,
                                                          pull=[0.02] * len(labels_crit) # Espaço entre fatias
                                                          )])
-                fig_donut_crit.update_layout(showlegend=False, height=300, margin=dict(t=10, b=10, l=10, r=10))
+                fig_donut_crit.update_layout(showlegend=False, height=300, margin=dict(t=15, b=10, l=10, r=10))
                 st.plotly_chart(fig_donut_crit, use_container_width=True)
             else:
                  st.caption("Nenhum documento classificado por critério.")

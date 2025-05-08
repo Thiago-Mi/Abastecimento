@@ -11,6 +11,10 @@ SHEET_USERS = "usuarios"
 SHEET_CLIENTS = "clientes"
 SHEET_ASSOC = "colaborador_cliente"
 
+# --- NEW: Log Sheet Names ---
+SHEET_ERROR_LOGS = "logs_de_erros"
+SHEET_AUDIT_LOGS = "logs_de_auditoria"
+
 # Convention for user-specific document sheets (will be prefixed)
 # The user's username will be appended, e.g., "docs_diogo"
 USER_DOCS_SHEET_PREFIX = "docs_"
@@ -31,7 +35,7 @@ DOCS_COLS = [
     "dimensao_criterio",
     "link_ou_documento",
     "quantidade",
-    "status", # e.g., 'Novo', 'Enviado', 'Validado', 'Inválido'
+    "status", # e.g., 'Novo', 'Cadastrado', 'Validado', 'Inválido'
     "data_envio_original",
     # --- NEW COLUMNS for Validation ---
     "data_validacao",       # Timestamp when validation occurred
@@ -39,7 +43,10 @@ DOCS_COLS = [
     "observacoes_validacao" # Optional: Admin comments
 ]
 
-VALID_STATUSES = ['Novo', 'Enviado', 'Pendente', 'Validado', 'Inválido']
+# --- NEW: Columns for Log Sheets ---
+ERROR_LOG_COLS = ["timestamp", "username", "function_name", "error_type", "error_message", "traceback_snippet"]
+AUDIT_LOG_COLS = ["timestamp", "admin_username", "action_type", "target_user", "target_entity", "details"]
+
 
 
 # --- Configurações da Interface ---
@@ -54,9 +61,9 @@ if not os.path.exists(LOGO_PATH): LOGO_PATH = None # Or set to None if not found
 APP_TITLE = "SAI - Sistema Híbrido de Acesso à Informação"
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin" # Change in production!
-DOCS_NO_DRIVE_TARGET = 54
+
 # Define valid statuses for easy reference and dropdowns
-VALID_STATUSES = ['Novo', 'Enviado', 'Pendente', 'Validado', 'Inválido'] # Add 'Inválido'
+VALID_STATUSES = ['Cadastrado', 'Validado', 'Inválido'] # Add 'Inválido'
 
 
 # --- Dashboard Appearance ---

@@ -64,7 +64,7 @@ with tab1:
             )
         with col2:
             quantidade = st.number_input("Quantidade (Links/Documentos)", min_value=1, value=1, step=1, key="form_qtd")
-            # --- UPDATED: Use config.VALID_STATUSES, default to 'Novo' or 'Enviado' ---
+            # --- UPDATED: Use config.VALID_STATUSES, default to 'Novo' or 'Cadastrado' ---
             status_inicial = st.selectbox(
                 "Status Inicial",
                 options=[s for s in config.VALID_STATUSES if s not in ['Validado', 'Inválido']], # User shouldn't set these initially
@@ -179,7 +179,7 @@ with tab1:
                     # Use the APPEND method for selected items
                     save_success = manager.save_selected_docs_to_sheets(username, selected_ids_unsync)
                 if save_success:
-                    st.success(f"{len(selected_ids_unsync)} registros selecionados foram enviados com sucesso!")
+                    st.success(f"{len(selected_ids_unsync)} registros selecionados foram cadastrados com sucesso!")
                     st.toast("Dados sincronizados!")
                     st.session_state.editor_key_counter += 1
                     st.rerun()
@@ -275,7 +275,7 @@ with tab2:
             'quantidade': 'Qtd.',
             'status': 'Status',
             'validado_por': 'Validado Por',
-            'observacoes_validacao': 'Observações Admin',
+            'observacoes_validacao': 'Observações',
             'is_synced': 'Sincronizado' # 0 = local/modificado, 1 = gsheet/processado
         }
         # Only rename columns that exist
@@ -286,7 +286,7 @@ with tab2:
         display_columns_ordered = [
             'Data Registro', 'Cliente', 'Critério', 'Link/Documento',
             'Qtd.', 'Status', 'Data Validação', 'Validado Por',
-            'Observações Admin', 'Sincronizado', 'id' # Keep id for reference if needed
+            'Observações', 'Sincronizado', 'id' # Keep id for reference if needed
         ]
         # Filter to only columns that actually exist in df_display after transformations
         final_display_cols = [col for col in display_columns_ordered if col in df_display.columns]
@@ -296,7 +296,7 @@ with tab2:
         column_config_display = {
             "Link/Documento": st.column_config.LinkColumn(
                 "Link/Documento",
-                help="Clique para abrir o link (se aplicável).",
+                help="Clique para abrir o link",
                 display_text="Abrir/Ver" # Or use a regex to show part of the URL
             ),
             "id": st.column_config.TextColumn("ID (Ref.)", width="small"),
