@@ -76,3 +76,8 @@ DEFAULT_CRITERIA_COLOR = '#888888'
 VALID_UPLOAD_ROLES = ['Admin', 'Usuario', 'Cliente'] # Keep for potential future features
 CLIENT_UPLOAD_REQUIRED_COLS = ['nome', 'tipo']
 ASSOC_UPLOAD_REQUIRED_COLS = ['colaborador_username', 'cliente_nome']
+
+# --- User Authentication ---
+DEFAULT_ADMIN_USERNAME = "admin"
+DEFAULT_ADMIN_PASSWORD = "admin_password" # Change this in a real environment!
+MIN_PASSWORD_LENGTH = 5 # Minimum password length

@@ -1173,6 +1173,85 @@ class Autenticador:
     def _verificar_senha(self, stored_hashed_password, provided_password):
         return stored_hashed_password == self._hash_password(provided_password)
 
+    def change_password(self, username, old_password, new_password):
+        """
+        Changes a user's password in the local database and Google Sheets.
+        Returns (True, "Success message") or (False, "Error message").
+        """
+        print(f"Attempting to change password for user: {username}")
+
+        # 1. Validate new password length
+        if len(new_password) < config.MIN_PASSWORD_LENGTH:
+            return False, f"A nova senha deve ter pelo menos {config.MIN_PASSWORD_LENGTH} caracteres."
+
+        # 2. Verify old password and get user data from GSheet (master source for passwords)
+        users_ws = self.gerenciador_bd._get_worksheet(config.SHEET_USERS)
+        if not users_ws:
+            return False, "Erro: Planilha de usuários não acessível."
+
+        try:
+            user_records = users_ws.get_all_records() # List of dicts
+            user_row_index = -1
+            user_data_gsheet = None
+
+            # Find user and their row index
+            for idx, record in enumerate(user_records):
+                if str(record.get('username','')).strip().lower() == str(username).strip().lower():
+                    user_row_index = idx + 2 # +1 for header, +1 for 0-based to 1-based
+                    user_data_gsheet = record
+                    break
+            
+            if not user_data_gsheet:
+                return False, "Usuário não encontrado na planilha."
+
+            stored_hash = user_data_gsheet.get('hashed_password')
+            if not stored_hash or not self._verificar_senha(stored_hash, old_password):
+                return False, "Senha antiga incorreta."
+
+            # 3. Hash the new password
+            new_hashed_password = self._hash_password(new_password)
+
+            # 4. Update GSheet
+            # Find the column index for 'hashed_password'
+            header = users_ws.row_values(1)
+            try:
+                password_col_index_gsheet = header.index('hashed_password') + 1
+            except ValueError:
+                return False, "Erro de configuração: Coluna 'hashed_password' não encontrada na planilha de usuários."
+
+            users_ws.update_cell(user_row_index, password_col_index_gsheet, new_hashed_password)
+            print(f"Password updated in GSheet for user {username}.")
+
+            # 5. Update local SQLite database
+            update_local_sql = "UPDATE usuarios SET hashed_password = ? WHERE username = ? COLLATE NOCASE"
+            rows_updated = self.gerenciador_bd._execute_local_sql(
+                update_local_sql,
+                (new_hashed_password, username),
+                fetch_mode=None
+            )
+
+            if rows_updated == 1:
+                self.gerenciador_bd.local_conn.commit() # Ensure commit for local DB
+                print(f"Password updated in local DB for user {username}.")
+                # It's good practice to also update the last_sync_timestamp if you have one for users
+                # self.gerenciador_bd._update_last_sync_time_gsheet(username) # Optional: if you want to mark this as a sync-worthy event
+                return True, "Senha alterada com sucesso!"
+            else:
+                # This case (GSheet updated, local failed) is problematic.
+                # Should ideally have a rollback for GSheet or a retry mechanism for local.
+                # For now, log and report error.
+                print(f"CRITICAL: Password updated in GSheet but FAILED to update in local DB for user {username}.")
+                return False, "Senha atualizada na nuvem, mas falha ao atualizar localmente. Contate o suporte."
+
+        except gspread.exceptions.APIError as api_err:
+            print(f"API Error during password change for {username}: {api_err}")
+            return False, f"Erro de API do Google ao alterar senha: {api_err}"
+        except Exception as e:
+            print(f"Unexpected error during password change for {username}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False, f"Erro inesperado ao alterar senha: {e}"
+
     def login(self, username, password):
         print(f"Attempting login for {username}.")
         # Prioritize local cache for login check for speed after initial load from sheets.

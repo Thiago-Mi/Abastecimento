@@ -115,6 +115,32 @@ def render_common_sidebar_elements():
         # --- Placeholder for Page-Specific Elements ---
         # Pages themselves will add their elements below this section using st.sidebar.*
 
+        # --- Change Password Section ---
+        with st.expander("Mudar Senha"):
+            with st.form("change_password_form", clear_on_submit=True):
+                current_password = st.text_input("Senha Atual", type="password", key="current_pw")
+                new_password = st.text_input("Nova Senha", type="password", key="new_pw")
+                confirm_password = st.text_input("Confirmar Nova Senha", type="password", key="confirm_pw")
+                change_password_submitted = st.form_submit_button("Alterar Senha")
+
+                if change_password_submitted:
+                    if not current_password or not new_password or not confirm_password:
+                        st.error("Todos os campos são obrigatórios.")
+                    elif new_password != confirm_password:
+                        st.error("A nova senha e a confirmação não coincidem.")
+                    elif len(new_password) < config.MIN_PASSWORD_LENGTH:
+                        st.error(f"A nova senha deve ter pelo menos {config.MIN_PASSWORD_LENGTH} caracteres.")
+                    else:
+                        username = st.session_state.get('username')
+                        if username:
+                            success, message = authenticator.change_password(username, current_password, new_password)
+                            if success:
+                                st.success(message)
+                            else:
+                                st.error(message)
+                        else:
+                            st.error("Nome de usuário não encontrado na sessão.")
+
         # --- Logout Button (Always at the bottom) ---
         st.divider() # Add divider before logout
         if st.button("Logout", key="logout_button_sidebar"):
