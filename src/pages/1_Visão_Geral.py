@@ -1,4 +1,3 @@
-# pages/1_Visão_Geral.py
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -20,7 +19,11 @@ manager = st.session_state.db_manager
 role = st.session_state.get('role')
 username = st.session_state.get('username')
 nome_completo = st.session_state.get('nome_completo')
-cliente_nome_logado = st.session_state.get('cliente_nome') # Used only if role is Cliente
+
+# For Cliente role
+cliente_id_logado = st.session_state.get('cliente_id_logado') # Get ID for client role
+cliente_nome_logado = st.session_state.get('cliente_nome')
+
 
 # --- Page Title ---
 st.markdown("#### 🗓️ Acompanhamento Abastecimento - Atricon 2025")
@@ -32,241 +35,169 @@ st.divider()
 
 # ------------------- VISTA DO CLIENTE -------------------
 if role == 'Cliente':
-    if not cliente_nome_logado:
-         st.error("Nome do cliente associado não encontrado.")
+    if not cliente_id_logado: # Check ID now
+         st.error("ID do cliente associado não encontrado.")
          st.stop()
 
-    # --- Sidebar Filter (already in streamlit_app.py) ---
     selected_period_label = st.session_state.get('selected_period', "Todos")
     periodo_dias_map = {"Últimos 7 dias": 7, "Últimos 30 dias": 30, "Últimos 90 dias": 90}
-    periodo_dias_filter = periodo_dias_map.get(selected_period_label) # None if "Todos"
+    periodo_dias_filter = periodo_dias_map.get(selected_period_label) 
 
-    # --- KPIs Cliente ---
     kpi_cliente = manager.get_kpi_data_local(
-        cliente_nome=cliente_nome_logado,
+        cliente_id=cliente_id_logado, # Use cliente_id
         periodo_dias=periodo_dias_filter
     )
     kp1, kp2, kp3 = st.columns(3)
-    kp1.metric("Docs Cadastrados", f"{kpi_cliente.get('docs_enviados', 0):02d}")
-    kp2.metric("Docs Pendentes", f"{kpi_cliente.get('docs_invalidos', 0):02d}")
+    kp1.metric("Docs Pendentes", f"{kpi_cliente.get('docs_enviados', 0):02d}")
+    kp2.metric("Docs Inválidos", f"{kpi_cliente.get('docs_invalidos', 0):02d}") # Assuming 'Pendentes' maps to 'invalidos' KPI key for now
     kp3.metric("Docs Validados", f"{kpi_cliente.get('docs_validados', 0):02d}")
-    st.markdown("---") # Visual separator like the image
+    st.markdown("---") 
 
-    # --- Gráfico de Linha Cliente ---
     st.subheader("Desempenho Temporal")
-    grupo_tempo = 'W' # Default Semanal, pode ser dinâmico se desejar
-    df_line_cliente = manager.get_docs_por_periodo_cliente_local(cliente_nome_logado, grupo=grupo_tempo)
+    grupo_tempo = 'W' 
+    # Pass cliente_id to get_docs_por_periodo_cliente_local
+    df_line_cliente = manager.get_docs_por_periodo_cliente_local(cliente_id=cliente_id_logado, grupo=grupo_tempo)
+
 
     if not df_line_cliente.empty and 'periodo_dt' in df_line_cliente.columns and 'contagem' in df_line_cliente.columns and df_line_cliente['contagem'].sum() > 0:
-         # GRÁFICO DE DISPERSÃO TEMPORAL COM TAMANHO DOS PONTOS
          fig_scatter_cli = px.scatter(df_line_cliente,
-                                      x='periodo_dt',
-                                      y='contagem',
-                                      size='contagem',  # Tamanho do ponto pela contagem
-                                      text='contagem',  # Mostrar contagem no ponto/hover
-                                      labels={'periodo_dt': 'Data', 'contagem': 'Docs Validados'},
-                                      size_max=15) # Ajuste o tamanho máximo do ponto conforme necessário
-
-         fig_scatter_cli.update_traces(
-             textposition='top center', # Posição do texto, se mostrado diretamente
-             marker=dict(line=dict(width=1, color='DarkSlateGrey')), # Contorno para os pontos
-         )
-         fig_scatter_cli.update_layout(
-             yaxis_title="Quantidade Validada",
-             xaxis_title="Período (Início da Semana)",
-             height=350,
-             margin=dict(l=20, r=20, t=30, b=20),
-             xaxis_tickformat='%d/%m/%Y',
-             showlegend=False # Legenda não é necessária se o tamanho já indica a contagem
-         )
-
-         # Adicionar anotação para o valor máximo (pico)
-        #  try:
-        #       peak_idx = df_line_cliente['contagem'].idxmax()
-        #       peak_row = df_line_cliente.loc[peak_idx]
-        #       if peak_row['contagem'] > 0:
-        #           fig_scatter_cli.add_annotation(
-        #               x=peak_row['periodo_dt'],
-        #               y=peak_row['contagem'],
-        #               text=f"<b>Max: {peak_row['contagem']}</b>",
-        #               showarrow=True,
-        #               arrowhead=1,
-        #               ax=0,
-        #               ay=-40, # Ajuste conforme necessário para o scatter
-        #               bordercolor="#636EFA",
-        #               borderwidth=1,
-        #               bgcolor="rgba(99, 110, 250, 0.7)",
-        #               font=dict(color="white")
-        #           )
-        #  except Exception as peak_err:
-        #       print(f"Could not add peak annotation to scatter chart: {peak_err}")
-
+                                      x='periodo_dt', y='contagem', size='contagem', text='contagem',
+                                      labels={'periodo_dt': 'Data', 'contagem': 'Docs Validados'}, size_max=15)
+         fig_scatter_cli.update_traces(textposition='top center', marker=dict(line=dict(width=1, color='DarkSlateGrey')))
+         fig_scatter_cli.update_layout(yaxis_title="Quantidade Validada", xaxis_title="Período (Início da Semana)",
+                                       height=350, margin=dict(l=20, r=20, t=30, b=20),
+                                       xaxis_tickformat='%d/%m/%Y', showlegend=False)
          st.plotly_chart(fig_scatter_cli, use_container_width=True)
     else:
          st.caption("Nenhum dado para exibir o gráfico de desempenho temporal.")
+    st.markdown("---")
 
-    st.markdown("---") # Visual separator
-
-    # --- Critérios Atendidos Cliente ---
-    # st.subheader("Critérios Atendidos")
-    # crit_data_cliente = manager.get_criterios_atendidos_cliente_local(cliente_nome_logado)
-
-    # if not crit_data_cliente or all(v['total'] == 0 for v in crit_data_cliente.values()):
-    #      st.info("Nenhum dado de critério encontrado para este cliente.")
-    # else:
-    #      max_total_crit = 1 # Avoid division by zero if no criteria have docs
-    #      totals = [data['total'] for data in crit_data_cliente.values() if data['total'] > 0]
-    #      if totals: max_total_crit = max(totals)
-
-    #      for criterio, data in crit_data_cliente.items():
-    #           total = data.get('total', 0)
-    #           atendidos = data.get('atendidos', 0)
-    #           # Percent relative to ITSELF, not overall total? Image implies percentage of total docs for that criterion.
-    #           percentual = (atendidos / total * 100) if total > 0 else 0
-    #           # Or percent relative to max total for scaling? Let's use percent of its own total.
-
-    #           color = config.CRITERIA_COLORS.get(criterio, config.DEFAULT_CRITERIA_COLOR)
-
-    #           col_cor, col_nome, col_barra_texto = st.columns([0.05, 0.2, 0.75])
-
-    #           with col_cor:
-    #                st.markdown(f'<div style="width: 20px; height: 20px; background-color: {color}; margin-top: 5px;"></div>', unsafe_allow_html=True)
-    #           with col_nome:
-    #                st.write(f"**{criterio}**")
-    #           with col_barra_texto:
-    #                 st.progress(percentual / 100)
-    #                 st.caption(f"{atendidos} docs / {percentual:.0f}%")
-
-    # --- Análise por Cliente ---
     st.subheader("📊 Status Geral")
-    client_for_analysis = cliente_nome_logado
-
-    if client_for_analysis:
-
-        # Fetch analysis data using the new method
-        # Filter by collaborator if the current role is Usuario
-        collab_filter_for_analysis = username if role == 'Usuario' else None
-        analysis_data = manager.get_analise_cliente_data_local(client_for_analysis, collab_filter_for_analysis)
-
-        col_an1, col_an2 = st.columns(2)
-
-        with col_an1: # Left side - Published vs Pending Donut
-            docs_drive = analysis_data['total_documentos_cliente']
-            docs_pub = analysis_data['docs_validados']
-            docs_pend = analysis_data['docs_invalidos']
-            st.markdown(f"🟢 Documentos no Drive - **{docs_pub+docs_pend}**") # Indicate it's a target
-            st.markdown(f"🔵 Documentos Validados - **{docs_pub}**")
-            st.markdown(f"🔴 Documentos Pendentes - **{docs_pend}**")
-
-            labels_status = ['Validados', 'Pendentes']
-            values_status = [docs_pub, docs_pend]
-            colors_status = ['#1f77b4', '#d62728'] # Blue, Red approx.
-
-            if sum(values_status) > 0 or docs_drive > 0: # Show if target exists even if no docs yet
-                fig_donut_status = go.Figure(data=[go.Pie(labels=labels_status,
-                                                        values=values_status,
-                                                        hole=.4,
-                                                        marker_colors=colors_status,
-                                                        pull=[0.02, 0.02],
-                                                        sort=False # Keep order Pub, Pend
-                                                        )])
-                fig_donut_status.update_layout(showlegend=False, height=300, margin=dict(t=15, b=10, l=10, r=10))
-                st.plotly_chart(fig_donut_status, use_container_width=True)
-            else:
-                st.caption("Nenhum documento para análise de status.")
+    # Use cliente_id_logado for analysis
+    analysis_data = manager.get_analise_cliente_data_local(cliente_id=cliente_id_logado)
 
 
-        with col_an2: # Right side - Criteria Donut
-            st.markdown("**Documentos por Critério**")
-            crit_counts = analysis_data.get('criterios_counts', {})
+    col_an1, col_an2 = st.columns(2)
+    with col_an1: 
+        docs_drive = analysis_data['total_documentos_cliente'] # This is total for the client
+        docs_pub = analysis_data['docs_validados']
+        docs_pend = analysis_data['docs_invalidos'] # This is total_docs - validated_docs
+        
+        # Displaying sum of validated and pending as "Documentos no Drive" implies these are the only two states considered for this KPI
+        st.markdown(f"🟢 Documentos no Registrados - **{docs_pub + docs_pend}**")
+        st.markdown(f"🔵 Documentos Validados - **{docs_pub}**")
+        st.markdown(f"🔴 Documentos Pendentes/Inválidos - **{docs_pend}**")
 
-            labels_crit = []
-            values_crit = []
-            colors_crit = []
+        labels_status = ['Validados', 'Pendentes/Inválidos']
+        values_status = [docs_pub, docs_pend]
+        colors_status = ['#1f77b4', '#d62728']
 
-            # Use defined criteria order and colors
-            for crit_name, color in config.CRITERIA_COLORS.items():
-                 count = crit_counts.get(crit_name, 0)
-                 st.markdown(f'<span style="color:{color}; font-size: 1.1em;">■</span> {crit_name} - **{count}**', unsafe_allow_html=True)
-                 if count > 0: # Only add to chart if count > 0
-                     labels_crit.append(crit_name)
-                     values_crit.append(count)
-                     colors_crit.append(color)
+        if sum(values_status) > 0 : # Only show chart if there are any docs
+            fig_donut_status = go.Figure(data=[go.Pie(labels=labels_status, values=values_status, hole=.4,
+                                                    marker_colors=colors_status, pull=[0.02, 0.02], sort=False)])
+            fig_donut_status.update_layout(showlegend=False, height=300, margin=dict(t=15, b=10, l=10, r=10))
+            st.plotly_chart(fig_donut_status, use_container_width=True)
+        else:
+            st.caption("Nenhum documento para análise de status.")
 
+    with col_an2: 
+        st.markdown("**Documentos Validados por Critério**") # Clarified: Shows validated docs per criteria
+        crit_counts = analysis_data.get('criterios_counts', {}) # This from get_analise_cliente_data_local should be validated counts per criteria
 
-            if sum(values_crit) > 0:
-                fig_donut_crit = go.Figure(data=[go.Pie(labels=labels_crit,
-                                                         values=values_crit,
-                                                         hole=.4,
-                                                         marker_colors=colors_crit,
-                                                         pull=[0.02] * len(labels_crit) # Espaço entre fatias
-                                                         )])
-                fig_donut_crit.update_layout(showlegend=False, height=300, margin=dict(t=15, b=10, l=10, r=10))
-                st.plotly_chart(fig_donut_crit, use_container_width=True)
-            else:
-                 st.caption("Nenhum documento classificado por critério.")
+        labels_crit, values_crit, colors_crit = [], [], []
+        for crit_name, color in config.CRITERIA_COLORS.items():
+             count = crit_counts.get(crit_name, 0)
+             st.markdown(f'<span style="color:{color}; font-size: 1.1em;">■</span> {crit_name} - **{count}**', unsafe_allow_html=True)
+             if count > 0: 
+                 labels_crit.append(crit_name)
+                 values_crit.append(count)
+                 colors_crit.append(color)
+        if sum(values_crit) > 0:
+            fig_donut_crit = go.Figure(data=[go.Pie(labels=labels_crit, values=values_crit, hole=.4,
+                                                     marker_colors=colors_crit, pull=[0.02] * len(labels_crit))])
+            fig_donut_crit.update_layout(showlegend=False, height=300, margin=dict(t=15, b=10, l=10, r=10))
+            st.plotly_chart(fig_donut_crit, use_container_width=True)
+        else:
+             st.caption("Nenhum documento validado classificado por critério.")
 
 
 # ------------------- VISTA ADMIN / USUARIO -------------------
 elif role in ['Admin', 'Usuario']:
 
-    # --- Sidebar Filters ---
-    st.sidebar.header("Filtros Dashboard")
-
-    # Colaborador Filter (Admin only)
-    selected_colab_filter_user = None # Username for filtering data
+    st.header("Filtros Dashboard")
+    col1, col2, col3 = st.columns(3)
+    selected_colab_filter_user = None
     if role == 'Admin':
         colaboradores = manager.listar_colaboradores_local()
         colab_options_map = {"Todos": None}
         colab_options_map.update({c['nome_completo']: c['username'] for c in colaboradores})
-        selected_colab_name = st.sidebar.selectbox("Selecione Colaborador:", list(colab_options_map.keys()))
+        with col1:
+            selected_colab_name = st.selectbox("Selecione Colaborador:", list(colab_options_map.keys()), index=0)
         selected_colab_filter_user = colab_options_map[selected_colab_name]
-    else: # Usuario sees their own data primarily
-         st.sidebar.write(f"**Colaborador:** {nome_completo}")
-         selected_colab_filter_user = username
+    else: 
+        with col1:
+            st.write(f"**Colaborador:** {nome_completo}")
+        selected_colab_filter_user = username
 
-    # Get clients relevant to the selection
-    clientes_list = manager.listar_clientes_local(colaborador_username=selected_colab_filter_user)
-    client_options = {"Todos": None}
-    client_options.update({c['nome']: c['id'] for c in clientes_list} if clientes_list else {}) # Using ID might be needed if name filter doesn't work
-    client_options_names_only = ["Todos"] + sorted([c['nome'] for c in clientes_list]) if clientes_list else ["Todos"]
+    # --- Filtro Tipo de Cliente ---
+    all_client_types_dicts = manager.listar_clientes_local() # Get all clients to extract types
+    available_client_types = sorted(list(set(c['tipo'] for c in all_client_types_dicts if c['tipo'])))
+    
+    selected_tipos_clientes_filter = ["Todos"]
+    if available_client_types: # Only show if there are types
+        with col2:
+            selected_tipos_clientes_filter = st.multiselect(
+                "Filtrar por Tipo de Cliente:",
+                options=available_client_types, # No "Todos" needed for multiselect default
+                key="admin_tipo_cliente_filter"
+            )
+        if not selected_tipos_clientes_filter: # If user deselects all, treat as "Todos"
+            selected_tipos_clientes_filter = ["Todos"]
 
 
-    selected_client_name_filter = st.sidebar.selectbox(
-        "Selecione Cliente:",
-        client_options_names_only,
-        key="admin_client_filter",
-        # Disable if showing 'Todos' collaborators and no clients? Or just show all clients?
-        # Let's allow selecting any client if 'Todos' collaborators selected
-        disabled= (selected_colab_filter_user is not None and not clientes_list) # Disable if specific user has no clients
+    # Get clients relevant to the selection (colaborador and type)
+    clientes_list_dicts = manager.listar_clientes_local(
+        colaborador_username=selected_colab_filter_user,
+        tipos_filter=selected_tipos_clientes_filter if "Todos" not in selected_tipos_clientes_filter else None
     )
-    if selected_client_name_filter == "Todos" and selected_colab_filter_user:
-        # If user selected 'Todos' clients, but a specific collab, show all clients for that collab
-        st.sidebar.caption("Exibindo todos os clientes atribuídos.")
+    
+    client_options_map = {"Todos": None} # Stores name: id
+    if clientes_list_dicts:
+        client_options_map.update({c['nome']: c['id'] for c in clientes_list_dicts})
+    with col3:
+        selected_client_name_filter = st.selectbox(
+            "Selecione Cliente:",
+            list(client_options_map.keys()), # Uses names for display
+            key="admin_client_name_filter",
+            disabled=(selected_colab_filter_user is not None and not clientes_list_dicts and "Todos" not in selected_tipos_clientes_filter)
+        )
+        selected_client_id_filter = client_options_map.get(selected_client_name_filter) # Get ID for filtering
+
+        if selected_client_name_filter == "Todos" and selected_colab_filter_user and "Todos" in selected_tipos_clientes_filter :
+            st.caption("Exibindo dados agregados para o colaborador.")
+        elif selected_client_name_filter == "Todos" and "Todos" not in selected_tipos_clientes_filter:
+            st.caption(f"Exibindo dados agregados para Tipos: {', '.join(selected_tipos_clientes_filter)}.")
 
 
     # --- KPIs Admin/Usuario ---
-    kpi_geral = manager.get_kpi_data_local(colaborador_username=selected_colab_filter_user) # Filter by selected collab
-    kp1, kp2, kp3, kp4 = st.columns(4)
-    # Rename based on Layout 2 image
-    kp1.metric("Links Cadastrados", f"{kpi_geral.get('docs_enviados', 0):02d}") # Assumes docs_enviados maps here
-    kp2.metric("Links Validados", f"{kpi_geral.get('docs_validados', 0):02d}") # Assumes docs_validados maps here
-    kp4.metric("Links Inválidos", f"{kpi_geral.get('docs_invalidos', 0):02d}")
-    st.divider()
+    # KPI data needs to be aware of the client_id_filter and tipos_cliente_filter
+    kpi_geral = manager.get_kpi_data_local(
+        colaborador_username=selected_colab_filter_user,
+        cliente_id=selected_client_id_filter, # Pass ID
+        tipos_cliente_filter=selected_tipos_clientes_filter if "Todos" not in selected_tipos_clientes_filter else None
+    )
+    kp1, kp2, kp3 = st.columns(3) # Removed one KPI to match client view for now
+    kp1.metric("Links Pendentes", f"{kpi_geral.get('docs_enviados', 0):02d}") 
+    kp2.metric("Links Validados", f"{kpi_geral.get('docs_validados', 0):02d}") 
+    kp3.metric("Links Inválidos", f"{kpi_geral.get('docs_invalidos', 0):02d}")
 
-    # --- Gráfico de Barras Ranking (Show always?) ---
     st.subheader("🏆 Ranking de Colaboradores por Pontuação")
-    df_pontuacao = manager.calcular_pontuacao_colaboradores_gsheet()
+    df_pontuacao = manager.calcular_pontuacao_colaboradores_gsheet() # Uses local cache; GSheet version is in Admin panel
 
     if not df_pontuacao.empty:
-        # Limit number displayed? Layout shows ~6-7. Use Top 15 for scrollability?
-        df_display = df_pontuacao.head(15).sort_values(by='Pontuação', ascending=False) # Descending for vertical bar
-
-        # Percentage is calculated globally in the manager method now.
-        # Calculate percentage relative to THIS displayed subset? No, global % is better.
+        df_display = df_pontuacao.head(15).sort_values(by='Pontuação', ascending=True) # Ascending for horizontal bar
         labels = [f"{row['Links Validados']} ({row['Percentual']:.1f}%)" for idx, row in df_display.iterrows()]
         colors = [config.DEFAULT_BAR_COLOR] * len(df_display)
-        # Highlight selected collaborator?
         if selected_colab_filter_user:
              selected_user_details = manager.buscar_usuario_local(selected_colab_filter_user)
              if selected_user_details and selected_user_details['nome_completo'] in df_display.index:
@@ -274,102 +205,75 @@ elif role in ['Admin', 'Usuario']:
                        idx_pos = df_display.index.get_loc(selected_user_details['nome_completo'])
                        colors[idx_pos] = config.HIGHLIGHT_BAR_COLOR
                   except KeyError: pass
-
-        # Create Vertical Bar Chart
         fig_bar_rank = go.Figure(go.Bar(
-            x=df_display.index,       # Colaborador Names
-            y=df_display['Pontuação'], # Score
-            text=labels,              # Use calculated labels
-            textposition='auto',      # Let Plotly decide best position (inside/outside)
-            marker_color=colors       # Use defined colors
-        ))
-        fig_bar_rank.update_layout(
-            #title="Pontuação por Colaborador", # Subheader serves as title
-            xaxis_title="Colaborador",
-            yaxis_title="Pontuação",
-            xaxis_tickangle=-45,      # Angle labels if many collaborators shown
-            height=400,
-            margin=dict(l=10, r=10, t=10, b=100) # Increase bottom margin for angled labels
-        )
+            y=df_display.index, x=df_display['Pontuação'], text=labels, orientation='h',
+            textposition='auto', marker_color=colors))
+        fig_bar_rank.update_layout(yaxis_title="Colaborador", xaxis_title="Pontuação", height=400,
+                                   margin=dict(l=150, r=10, t=10, b=40), yaxis={'categoryorder':'total ascending'}) # Ensure y-axis matches sorted data
         st.plotly_chart(fig_bar_rank, use_container_width=True)
     else:
-        st.info("Ainda não há dados de pontuação para exibir.")
+        st.info("Ainda não há dados de pontuação para exibir (ranking local).")
     st.divider()
 
-    # --- Análise por Cliente ---
     st.subheader("📊 Análise por Cliente")
-    client_for_analysis = selected_client_name_filter if selected_client_name_filter != "Todos" else None
+    
+    # client_for_analysis is the NAME, we need the ID for the manager method
+    client_id_for_analysis = selected_client_id_filter 
 
-    if client_for_analysis:
-        st.info(f"**Cliente Selecionado:** {client_for_analysis}")
+    if client_id_for_analysis: # Check if a specific client ID is selected
+        st.info(f"**Cliente Selecionado:** {selected_client_name_filter}") # Display name
 
-        # Fetch analysis data using the new method
-        # Filter by collaborator if the current role is Usuario
-        collab_filter_for_analysis = username if role == 'Usuario' else None
-        analysis_data = manager.get_analise_cliente_data_local(client_for_analysis, collab_filter_for_analysis)
+        collab_filter_for_analysis = username if role == 'Usuario' else selected_colab_filter_user # Admin can see specific collab's view of client
+        
+        # Pass client_id_for_analysis
+        analysis_data = manager.get_analise_cliente_data_local(
+            cliente_id=client_id_for_analysis,
+            colaborador_username=collab_filter_for_analysis
+        )
 
         col_an1, col_an2 = st.columns(2)
-
-        with col_an1: # Left side - Published vs Pending Donut
-            st.markdown("**Status Geral**")
-            docs_drive = analysis_data['total_documentos_cliente']
+        with col_an1: 
+            st.markdown("**Status Geral do Cliente**")
+            docs_total_client = analysis_data['total_documentos_cliente']
             docs_pub = analysis_data['docs_validados']
             docs_pend = analysis_data['docs_invalidos']
-            st.markdown(f"🟢 Documentos no Drive - **{docs_pub+docs_pend}**") # Indicate it's a target
+            st.markdown(f"🟢 Documentos Registrado - **{docs_total_client}**")
             st.markdown(f"🔵 Documentos Validados - **{docs_pub}**")
-            st.markdown(f"🔴 Documentos Pendentes - **{docs_pend}**")
+            st.markdown(f"🔴 Documentos Pendentes/Inválidos - **{docs_pend}**")
 
-            labels_status = ['Validados', 'Pendentes']
+            labels_status = ['Validados', 'Pendentes/Inválidos']
             values_status = [docs_pub, docs_pend]
-            colors_status = ['#1f77b4', '#d62728'] # Blue, Red approx.
+            colors_status = ['#1f77b4', '#d62728'] 
 
-            if sum(values_status) > 0 or docs_drive > 0: # Show if target exists even if no docs yet
-                fig_donut_status = go.Figure(data=[go.Pie(labels=labels_status,
-                                                        values=values_status,
-                                                        hole=.4,
-                                                        marker_colors=colors_status,
-                                                        pull=[0.02, 0.02],
-                                                        sort=False # Keep order Pub, Pend
-                                                        )])
+            if sum(values_status) > 0 : 
+                fig_donut_status = go.Figure(data=[go.Pie(labels=labels_status, values=values_status, hole=.4,
+                                                        marker_colors=colors_status, pull=[0.02, 0.02], sort=False)])
                 fig_donut_status.update_layout(showlegend=False, height=300, margin=dict(t=15, b=10, l=10, r=10))
                 st.plotly_chart(fig_donut_status, use_container_width=True)
             else:
-                st.caption("Nenhum documento para análise de status.")
+                st.caption("Nenhum documento para análise de status deste cliente.")
+        with col_an2: 
+            st.markdown("**Documentos Validados por Critério**")
+            crit_counts = analysis_data.get('criterios_counts', {}) # validated counts per criteria
 
-
-        with col_an2: # Right side - Criteria Donut
-            st.markdown("**Documentos por Critério**")
-            crit_counts = analysis_data.get('criterios_counts', {})
-
-            labels_crit = []
-            values_crit = []
-            colors_crit = []
-
-            # Use defined criteria order and colors
+            labels_crit, values_crit, colors_crit = [], [], []
             for crit_name, color in config.CRITERIA_COLORS.items():
                  count = crit_counts.get(crit_name, 0)
                  st.markdown(f'<span style="color:{color}; font-size: 1.1em;">■</span> {crit_name} - **{count}**', unsafe_allow_html=True)
-                 if count > 0: # Only add to chart if count > 0
+                 if count > 0: 
                      labels_crit.append(crit_name)
                      values_crit.append(count)
                      colors_crit.append(color)
-
-
             if sum(values_crit) > 0:
-                fig_donut_crit = go.Figure(data=[go.Pie(labels=labels_crit,
-                                                         values=values_crit,
-                                                         hole=.4,
-                                                         marker_colors=colors_crit,
-                                                         pull=[0.02] * len(labels_crit) # Espaço entre fatias
-                                                         )])
+                fig_donut_crit = go.Figure(data=[go.Pie(labels=labels_crit, values=values_crit, hole=.4,
+                                                         marker_colors=colors_crit, pull=[0.02] * len(labels_crit))])
                 fig_donut_crit.update_layout(showlegend=False, height=300, margin=dict(t=15, b=10, l=10, r=10))
                 st.plotly_chart(fig_donut_crit, use_container_width=True)
             else:
-                 st.caption("Nenhum documento classificado por critério.")
-
-
-    else:
-        st.info("⬅️ Selecione um cliente na barra lateral para ver a análise detalhada.")
-
+                 st.caption("Nenhum documento validado classificado por critério para este cliente.")
+    elif "Todos" not in selected_tipos_clientes_filter and selected_tipos_clientes_filter : # If types are selected but not a specific client
+        st.info(f"Exibindo KPIs agregados para os tipos de cliente selecionados: {', '.join(selected_tipos_clientes_filter)}. Selecione um cliente específico para análise detalhada.")
+    else: # No specific client or type selected for detailed analysis
+        st.info("⬅️ Selecione um cliente e/ou tipo de cliente na barra lateral para ver a análise detalhada.")
 else:
     st.error("Perfil de usuário desconhecido.")

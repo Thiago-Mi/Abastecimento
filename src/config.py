@@ -1,4 +1,3 @@
-# config.py
 import os
 import plotly.express as px
 
@@ -22,15 +21,16 @@ USER_DOCS_SHEET_PREFIX = "docs_"
 # Expected columns for each CENTRAL sheet (ensure they match your sheet)
 # Add/remove columns as needed
 USERS_COLS = ["username", "hashed_password", "nome_completo", "role", "last_sync_timestamp"] # Added timestamp
-CLIENTS_COLS = ["id", "nome", "tipo"] # Assuming you add a unique ID column manually to the sheet
-ASSOC_COLS = ["colaborador_username", "cliente_nome"] # Example if using associations sheet
+CLIENTS_COLS = ["id", "nome", "tipo"] # 'tipo' is crucial here
+ASSOC_COLS = ["colaborador_username", "cliente_id"] # Example if using associations sheet
 
 # Expected columns for the USER document sheets (adjust!)
 # These MUST match the columns in your `docs_username` sheets
 DOCS_COLS = [
     "id",
     "colaborador_username",
-    "cliente_nome",
+    "cliente_nome", # Retained for easier display/initial mapping
+    "cliente_id",   # NEW: Foreign key to clientes table
     "data_registro",
     "dimensao_criterio",
     "link_ou_documento",
