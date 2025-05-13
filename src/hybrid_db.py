@@ -675,53 +675,59 @@ class HybridDBManager:
 
     # --- Local Write Methods ---
 
-    def add_documento_local(self, doc_data: dict):
-        """ Adds a new document entry locally, marked as unsynced (is_synced = 0). """
-        if not doc_data.get('id'):
-            doc_data['id'] = str(uuid.uuid4())
+    def add_documento_local(self, doc_data):
+        """
+        Adds a single document record to the local SQLite 'documentos' table.
+        Generates a UUID for the 'id' if not provided.
+        doc_data is a dictionary matching the table columns.
+        Returns (True, "SUCCESS") on success, (False, "ERROR_MESSAGE") or (False, "DUPLICATE") on failure.
+        """
+        if not doc_data.get("id"):
+            doc_data["id"] = str(uuid.uuid4())
 
-        # Fetch cliente_id based on cliente_nome if not already provided
-        if not doc_data.get('cliente_id') and doc_data.get('cliente_nome'):
-            cliente_info = self._execute_local_sql(
-                "SELECT id FROM clientes WHERE nome = ? COLLATE NOCASE",
-                (doc_data['cliente_nome'],), fetch_mode="one"
-            )
-            if cliente_info:
-                doc_data['cliente_id'] = cliente_info['id']
-            else:
-                st.error(f"Não foi possível encontrar o ID para o cliente '{doc_data['cliente_nome']}'. Documento não será salvo com ID de cliente.")
-                # Optionally, prevent saving or save with NULL cliente_id depending on requirements
-                # doc_data['cliente_id'] = None # Or return False
+        # --- Verificação de Duplicidade ---
+        check_query = """
+            SELECT id FROM documentos
+            WHERE colaborador_username = ?
+            AND cliente_id = ?
+            AND dimensao_criterio = ?
+            AND link_ou_documento = ?
+        """
+        existing_doc = self._execute_local_sql(
+            check_query,
+            (
+                doc_data.get("colaborador_username"),
+                doc_data.get("cliente_id"),
+                doc_data.get("dimensao_criterio"),
+                doc_data.get("link_ou_documento"),
+            ),
+            fetch_mode="one",
+        )
 
-        all_expected_local_cols = config.DOCS_COLS + ['is_synced']
-        final_doc_data = {}
+        if existing_doc:
+            print(f"Tentativa de adicionar documento duplicado: {doc_data.get('link_ou_documento')} para cliente ID {doc_data.get('cliente_id')}")
+            return False, "DUPLICATE" # Retorna tupla
+        # --- Fim da Verificação de Duplicidade ---
 
-        for col in all_expected_local_cols:
-            if col == 'is_synced':
-                final_doc_data[col] = 0 # Mark as unsynced
-            elif col in doc_data:
-                final_doc_data[col] = str(doc_data[col]) if doc_data[col] is not None else None
-            else: # Default for missing columns (like validation cols if not provided)
-                final_doc_data[col] = None
-        
-        ordered_values = [final_doc_data.get(col) for col in all_expected_local_cols]
-        placeholders = ", ".join(["?"] * len(all_expected_local_cols))
-        cols_str = ", ".join([f'"{col}"' for col in all_expected_local_cols])
-
-        query = f"INSERT INTO documentos ({cols_str}) VALUES ({placeholders})"
-
+        cols = list(doc_data.keys())
+        placeholders = ", ".join(["?"] * len(cols))
+        columns_quoted = [f'"{c}"' for c in cols]
+        columns_str = ", ".join(columns_quoted)
+        query = f'INSERT INTO documentos ({columns_str}) VALUES ({placeholders})'
         try:
-            rowcount = self._execute_local_sql(query, tuple(ordered_values), fetch_mode=None)
-            if rowcount == 1:
-                st.session_state['unsaved_changes'] = True
-                print(f"Documento local adicionado (unsynced): {final_doc_data.get('id')}")
-                return True
-            else:
-                st.error("Falha ao adicionar documento localmente (rowcount != 1).")
-                return False
+            self._execute_local_sql(query, list(doc_data.values()), fetch_mode=None)
+            self.local_conn.commit()
+            # print(f"Documento {doc_data.get('id')} adicionado localmente com sucesso.")
+            return True, "SUCCESS" # Retorna tupla
+        except sqlite3.IntegrityError as e:
+            print(f"Erro de integridade SQLite ao adicionar documento local: {e}. Dados: {doc_data}")
+            return False, f"DB_INTEGRITY_ERROR: {e}" # Retorna tupla
+        except sqlite3.Error as e:
+            print(f"Erro SQLite ao adicionar documento local: {e}. Dados: {doc_data}")
+            return False, f"DB_ERROR: {e}" # Retorna tupla
         except Exception as e:
-             st.error(f"Erro ao executar inserção local: {e}")
-             return False
+            print(f"Erro inesperado ao adicionar documento local: {e}. Dados: {doc_data}")
+            return False, f"UNEXPECTED_ERROR: {e}" # Retorna tupla
 
 
     def save_selected_docs_to_sheets(self, username, list_of_doc_ids):

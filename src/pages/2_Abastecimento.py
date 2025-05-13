@@ -22,9 +22,10 @@ username = st.session_state.get('username')
 nome_completo = st.session_state.get('nome_completo')
 
 # --- Page Title ---
-tab1, tab2 = st.tabs([
+tab1, tab2, tab3 = st.tabs([
     "Registrar Novo Abastecimento", 
-    "Visualizar Abastecimento" 
+    "Visualizar Abastecimento",
+    "🔗 Atribuir Cliente-Colaborador" 
 ])
 
 with tab1:
@@ -129,31 +130,58 @@ with tab1:
             else:
                 num_added = 0
                 num_failed = 0
+                num_duplicates = 0 # Contador para duplicatas
+                duplicate_messages = [] # Lista para armazenar mensagens de duplicatas
                 
-                cliente_id_selecionado = client_name_to_id_map.get(cliente_selecionado_nome)
-                if not cliente_id_selecionado:
-                    st.error("Erro interno: ID do cliente não encontrado para o nome selecionado.")
-                    # Don't proceed if ID is missing
+                # Obter cliente_id e cliente_tipo com base no cliente_nome_selecionado e no filtro de tipo
+                # Esta lógica assume que client_name_to_id_map e filtered_clients_for_dropdown estão corretos
+                
+                selected_client_data = next((c for c in filtered_clients_for_dropdown if c['nome'] == cliente_selecionado_nome), None)
+
+                if not selected_client_data:
+                    st.error(f"Erro interno: Não foi possível encontrar os dados completos para o cliente '{cliente_selecionado_nome}'.")
                 else:
+                    cliente_id_selecionado = selected_client_data['id']
+                    cliente_tipo_selecionado = selected_client_data['tipo'] # Necessário para a mensagem de erro
+
                     for item_desc in items:
                         doc_data = {
-                            "id": None,
+                            "id": None, # Será gerado em add_documento_local
                             "colaborador_username": username,
-                            "cliente_nome": cliente_selecionado_nome,
+                            "cliente_nome": cliente_selecionado_nome, # Mantido para referência, mas cliente_id é a chave
                             "cliente_id": cliente_id_selecionado,
-                            "data_registro": data_reg.isoformat() if data_reg else None,
+                            "data_registro": data_reg.isoformat() if data_reg else datetime.now().date().isoformat(),
                             "dimensao_criterio": dimensao,
                             "link_ou_documento": item_desc,
-                            "quantidade": 1, # Always 1 per line item now
+                            "quantidade": 1,
                             "status": status_inicial,
-                            "data_envio_original": None, "data_validacao": None,
-                            "validado_por": None, "observacoes_validacao": None,
+                            "data_envio_original": datetime.now().date().isoformat(), # Data de quando foi adicionado localmente
+                            "data_validacao": None,
+                            "validado_por": None,
+                            "observacoes_validacao": None,
+                            "is_synced": 0
                         }
-                        add_success = manager.add_documento_local(doc_data)
-                        if add_success: num_added += 1
-                        else: num_failed += 1
-                    if num_added > 0: st.success(f"{num_added} registro(s) adicionado(s) com sucesso à sua sessão local.")
-                    if num_failed > 0: st.warning(f"{num_failed} registro(s) falharam ao ser adicionados localmente.")
+                        add_success, message = manager.add_documento_local(doc_data)
+                        if add_success:
+                            num_added += 1
+                        elif message == "DUPLICATE":
+                            num_duplicates += 1
+                            duplicate_messages.append(
+                                f"⚠️ **Duplicado:** O item '{item_desc}' já foi registrado para o cliente '{cliente_selecionado_nome} ({cliente_tipo_selecionado})' na dimensão '{dimensao}'."
+                            )
+                        else:
+                            num_failed += 1
+                            st.error(f"Falha ao adicionar '{item_desc}': {message}") # Exibe outras mensagens de erro
+
+                    if num_added > 0: st.success(f"{num_added} registro(s) novo(s) adicionado(s) com sucesso à sua sessão local.")
+                    if duplicate_messages:
+                        for msg in duplicate_messages:
+                            st.warning(msg)
+                    if num_failed > 0: st.warning(f"{num_failed} registro(s) falharam ao ser adicionados por outros motivos.")
+                    
+                    # Limpar o campo de texto após o processamento bem-sucedido ou parcial
+                    # if num_added > 0 or num_duplicates > 0 or num_failed > 0: # Rerun se algo aconteceu
+                        # st.rerun()  # Rerun para atualizar a contagem e a lista de pendentes
     st.divider()
     st.subheader("Registros Locais Pendentes de Envio")
     unsynced_docs = manager.get_unsynced_documents_local(username)
@@ -335,4 +363,110 @@ with tab2:
                 column_config_display[col_name] = st.column_config.TextColumn(col_name, disabled=True)
         
     st.dataframe(df_display[final_display_cols], column_config=column_config_display, hide_index=True, use_container_width=True)
-        
+
+
+with tab3:
+    st.subheader(f"Meus Clientes Atribuídos")
+    st.caption(f"Visualizando clientes atribuídos a: **{nome_completo}** ({username})")
+    st.divider()
+
+    # Obter clientes atribuídos ao usuário logado (username)
+    assigned_clients_to_user = manager.get_assigned_clients_local(username)
+
+    if not assigned_clients_to_user:
+        st.info("Você não está atualmente atribuído a nenhum cliente.")
+    else:
+        client_types_of_user = sorted(list(set(c['tipo'] for c in assigned_clients_to_user if c['tipo'])))
+        selected_type_filter_my_clients = "Todos"
+        if client_types_of_user:
+            filter_options_my_clients = ["Todos"] + client_types_of_user
+            selected_type_filter_my_clients = st.selectbox(
+                "Filtrar seus clientes atribuídos por Tipo:",
+                options=filter_options_my_clients,
+                key="my_assigned_clients_type_filter_abastecimento"
+            )
+
+        clients_to_display_list = assigned_clients_to_user
+        if selected_type_filter_my_clients != "Todos":
+            clients_to_display_list = [
+                c for c in assigned_clients_to_user if c['tipo'] == selected_type_filter_my_clients
+            ]
+
+        if not clients_to_display_list:
+            st.info(f"Nenhum cliente atribuído a você corresponde ao tipo '{selected_type_filter_my_clients}'.")
+        else:
+            st.markdown(f"**Total de clientes atribuídos (correspondendo ao filtro): {len(clients_to_display_list)}**")
+            df_display_my_clients = pd.DataFrame(clients_to_display_list)
+            if not df_display_my_clients.empty:
+                df_display_my_clients_view = df_display_my_clients[['nome', 'tipo']].copy().sort_values(by=['nome'])
+                df_display_my_clients_view.rename(columns={'nome': 'Nome do Cliente', 'tipo': 'Tipo do Cliente'}, inplace=True)
+                st.dataframe(
+                    df_display_my_clients_view,
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        "Nome do Cliente": st.column_config.TextColumn("Nome do Cliente"),
+                        "Tipo do Cliente": st.column_config.TextColumn("Tipo do Cliente"),
+                    }
+                )
+
+    st.divider()
+    st.subheader("Atribuir Novos Clientes a Mim")
+
+    all_system_clients = manager.listar_clientes_local() # Lista de {'id', 'nome', 'tipo'}
+    assigned_client_ids_for_user = [c['id'] for c in assigned_clients_to_user]
+
+    available_for_self_assignment = [
+        client for client in all_system_clients
+        if client['id'] not in assigned_client_ids_for_user
+    ]
+
+    if not available_for_self_assignment:
+        st.info("Não há novos clientes disponíveis no sistema para autoatribuição ou todos os clientes já estão atribuídos a você.")
+    else:
+        available_client_types_for_self_assign = sorted(list(set(c['tipo'] for c in available_for_self_assignment if c['tipo'])))
+        selected_available_type_filter_self_assign = "Todos"
+        if available_client_types_for_self_assign:
+            filter_options_available_self_assign = ["Todos"] + available_client_types_for_self_assign
+            selected_available_type_filter_self_assign = st.selectbox(
+                "Filtrar clientes disponíveis para atribuição por Tipo:",
+                options=filter_options_available_self_assign,
+                key="self_assign_available_type_filter"
+            )
+
+        clients_to_offer_for_assignment = available_for_self_assignment
+        if selected_available_type_filter_self_assign != "Todos":
+            clients_to_offer_for_assignment = [
+                c for c in available_for_self_assignment if c['tipo'] == selected_available_type_filter_self_assign
+            ]
+
+        if not clients_to_offer_for_assignment:
+            st.info(f"Nenhum cliente disponível do tipo '{selected_available_type_filter_self_assign}' para autoatribuição.")
+        else:
+            client_id_to_display_map_self_assign = {
+                client['id']: f"{client['nome']} ({client['tipo']})"
+                for client in clients_to_offer_for_assignment
+            }
+            multiselect_options_ids_self_assign = list(client_id_to_display_map_self_assign.keys())
+
+            def format_client_for_self_assign_multiselect(client_id):
+                return client_id_to_display_map_self_assign.get(client_id, client_id)
+
+            selected_ids_to_self_assign = st.multiselect(
+                "Selecione clientes para atribuir a você:",
+                options=multiselect_options_ids_self_assign,
+                format_func=format_client_for_self_assign_multiselect,
+                key="self_assign_clients_multiselect"
+            )
+
+            if st.button("➕ Atribuir Selecionados a Mim"):
+                if selected_ids_to_self_assign:
+                    with st.spinner("Atribuindo clientes..."):
+                        assign_success = manager.assign_clients_to_collab(username, selected_ids_to_self_assign)
+                        if assign_success:
+                            st.success("Clientes atribuídos com sucesso! A lista será atualizada.")
+                            st.rerun()
+                        else:
+                            st.error("Falha ao atribuir os clientes selecionados.")
+                else:
+                    st.warning("Nenhum cliente selecionado para atribuir.")
